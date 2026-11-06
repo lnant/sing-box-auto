@@ -31,7 +31,7 @@ the service and the Argo tunnel are systemd-managed (auto-restart on crash); wit
 systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
-e.g. `.../sing-box-auto/v1.1.0/sing-box-auto.sh`. Current version: **v1.1.0**
+e.g. `.../sing-box-auto/v1.1.0/sing-box-auto.sh`. Current version: **v1.1.1**
 (see [CHANGELOG.md](CHANGELOG.md) and GitHub Releases).
 
 ## After install

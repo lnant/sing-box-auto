@@ -27,7 +27,7 @@ set -euo pipefail
 #----------------------------- 0. 参数与常量 ---------------------------------
 ACTION="${1:-install}"
 
-SCRIPT_VERSION="1.1.0"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.1.1"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 
 # version 动作只打印版本，不需要 root / 已安装，提前处理
 if [[ "$ACTION" == "version" ]]; then

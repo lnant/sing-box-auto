@@ -40,7 +40,7 @@ x86_64 / arm64 / armv7 架构。另外：
 
 ## 版本
 
-当前版本：**v1.1.0**（变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 GitHub Releases）。
+当前版本：**v1.1.1**（变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 GitHub Releases）。
 已安装的机器上运行 `sbox version` 可查看脚本版本号。
 
 一键安装默认拉取最新版（main 分支）。若想固定在某个已发布版本（例如新版有问题时回退），

@@ -43,7 +43,7 @@ else
   ACTION="${1:-install}"        # install | uninstall | menu | change-uuid | change-reality | change-cert | change-argo | change-ports | show-links | restart | update-script | update-core | version
 fi
 
-SCRIPT_VERSION="1.1.0"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.1.1"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 
 # version 动作只打印版本，不需要 root / 已安装，提前处理
 if [[ "$ACTION" == "version" ]]; then
@@ -287,6 +287,9 @@ open_firewall() {
   elif command -v iptables >/dev/null 2>&1 \
      && iptables -C INPUT -p tcp --dport "$first_port" -j ACCEPT 2>/dev/null; then
     fw_ok=1
+  elif command -v ip6tables >/dev/null 2>&1 \
+     && ip6tables -C INPUT -p tcp --dport "$first_port" -j ACCEPT 2>/dev/null; then
+    fw_ok=1
   fi
   if (( fw_ok == 1 )); then
     echo "[信息] 防火墙已放行"
@@ -371,7 +374,7 @@ fetch_latest_version() {
 download_singbox() {
   local ver="$1"
   local name="sing-box-${ver}-linux-${ARCH}"
-  curl -fSL --retry 2 -o "$SB_DIR/sing-box.tar.gz" \
+  curl -fSL --retry 2 --max-time 120 -o "$SB_DIR/sing-box.tar.gz" \
     "https://github.com/SagerNet/sing-box/releases/download/v${ver}/${name}.tar.gz" || return 1
   tar xzf "$SB_DIR/sing-box.tar.gz" -C "$SB_DIR" || return 1
   mv -f "$SB_DIR/$name/sing-box" "$SB_DIR/sing-box" || return 1
@@ -488,13 +491,22 @@ gen_certs() {
     echo "[信息] 自签证书已存在，跳过生成"
     return 0
   fi
-  echo "[信息] 生成自签证书（CN=$SNI_SELF，含 SAN）…"
+  # SAN 带上自签伪装域名与本机公网 IP（IP SAN）：纯 IP 型机器（无域名）
+  # 按 IP 直连时，不允许 insecure 的客户端靠它完成 TLS 校验；
+  # 拿不到公网 IP 就跳过 IP 项，保持原有行为
+  local _san="DNS:$SNI_SELF" _pip
+  _pip="$(get_ip)"
+  _pip="${_pip#[}"; _pip="${_pip%]}"   # 归一化：裸地址
+  if [[ "$_pip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ || "$_pip" == *:* ]]; then
+    _san="$_san,IP:$_pip"
+  fi
+  echo "[信息] 生成自签证书（CN=$SNI_SELF，SAN=$_san）…"
   openssl ecparam -genkey -name prime256v1 -out "$SB_DIR/private.key" 2>/dev/null
   # 必须带 SAN：现代 TLS 会拒绝只有 CN 的证书
   # （x509: certificate relies on legacy Common Name field）
   if ! openssl req -new -x509 -days 36500 -key "$SB_DIR/private.key" \
       -out "$SB_DIR/cert.pem" -subj "/CN=$SNI_SELF" \
-      -addext "subjectAltName=DNS:$SNI_SELF" 2>/dev/null; then
+      -addext "subjectAltName=$_san" 2>/dev/null; then
     # 老版本 OpenSSL 不支持 -addext，回退到配置文件方式
     local _cnf
     _cnf=$(mktemp)
@@ -506,7 +518,7 @@ prompt = no
 [dn]
 CN = $SNI_SELF
 [ext]
-subjectAltName = DNS:$SNI_SELF
+subjectAltName = $_san
 EOF
     openssl req -new -x509 -days 36500 -key "$SB_DIR/private.key" \
       -out "$SB_DIR/cert.pem" -config "$_cnf" 2>/dev/null
@@ -616,8 +628,78 @@ load_or_gen_identity() {
 }
 
 #----------------------------- 7. 写 sing-box 配置 ---------------------------
+# 受限网络环境自适应（OpenVZ/venet 容器）：
+# 背景（2026-11-06 于 OpenVZ 免费机实测）：这类容器默认路由无网关、网卡是 venet，
+# sing-box 内置 DNS 要靠枚举网卡/路由选默认接口，而容器禁止枚举（日志原文
+# "list routes: address family not supported by protocol"），于是出站解析全灭、
+# 全部直连链与 ACME 一起死；同机的系统解析（/etc/resolv.conf）却一切正常。
+# 对策：三项指纹同时成立才判「受限」，write_config 给配置顶层加两段——
+# dns 走普通 UDP 指向系统解析（注意：sing-box 的 dns type "local" 仍走其自家
+# 拨号层、实测无效，必须普通 udp）；route 关闭接口自动探测并写死默认网卡。
+# 判假时不写这两段，生成的配置与改前逐字节一致（正常机器零影响）。
+# 检测宁可漏报不可误报：用到的命令缺失（systemd-detect-virt / ip）一律判假。
+
+# 默认路由的 dev 名（如 venet0 / eth0）；取不到输出空
+restricted_net_dev() {
+  command -v ip >/dev/null 2>&1 || return 0
+  ip route show default 2>/dev/null | head -n 1 \
+    | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}'
+}
+
+# 系统解析地址：/etc/resolv.conf 第一个 nameserver；读不到回退回环 stub 口
+restricted_net_nameserver() {
+  local _ns=""
+  if [[ -r /etc/resolv.conf ]]; then
+    _ns=$(awk '$1=="nameserver" {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)
+  fi
+  [[ -n "$_ns" ]] || _ns="127.0.0.53"
+  printf '%s\n' "$_ns"
+}
+
+# 三项指纹同时成立才返回 0：①OpenVZ ②默认路由 dev 以 venet 开头 ③默认路由无网关
+restricted_net_env() {
+  # ① OpenVZ：systemd-detect-virt 最直接；它缺失或判不出时退查
+  #    /proc/user_beancounters——OpenVZ/Virtuozzo 容器有此文件、普通机器没有
+  local _ovz=0
+  if command -v systemd-detect-virt >/dev/null 2>&1 \
+     && [[ "$(systemd-detect-virt 2>/dev/null || true)" == "openvz" ]]; then
+    _ovz=1
+  fi
+  if [[ -e /proc/user_beancounters ]]; then _ovz=1; fi
+  (( _ovz == 1 )) || return 1
+  command -v ip >/dev/null 2>&1 || return 1
+  # ② 网卡：默认路由 dev 名以 venet 开头（venet0 等）
+  local _dev
+  _dev=$(restricted_net_dev)
+  [[ "$_dev" == venet* ]] || return 1
+  # ③ 无网关：受限环境的默认路由形如 "default dev venet0 scope link"（无 via 段）；
+  #    IPv6 默认路由同机同形，可作旁证，这里以 IPv4 行为准即可（venet 机器必有此行）
+  local _def
+  _def=$(ip route show default 2>/dev/null | head -n 1)
+  [[ -n "$_def" && "$_def" != *" via "* ]] || return 1
+  return 0
+}
+
+# 受限时 write_config 追加的 JSON 尾段（顶层 dns + route）；非受限输出空。
+# $1 可选：调用方既有的 route 内字段（如 WARP 的 rules/final），非空时并入
+# 同一个 route 对象，避免顶层出现两个 "route" 键；default_interface 取不到时
+# 只写 auto_detect_interface。
+restricted_net_tail() {
+  restricted_net_env || return 0
+  local _ns _dev _route="\"auto_detect_interface\": false"
+  _ns=$(restricted_net_nameserver)
+  _dev=$(restricted_net_dev)
+  if [[ -n "$_dev" ]]; then _route="$_route, \"default_interface\": \"$_dev\""; fi
+  if [[ -n "${1:-}" ]]; then _route="$_route, $1"; fi
+  printf ',\n  "dns": {"servers": [{"type": "udp", "server": "%s", "tag": "sys"}], "final": "sys"},\n  "route": {%s}' "$_ns" "$_route"
+}
+
 write_config() {
   echo "[信息] 写入 sing-box 配置…"
+  # 受限网络环境自适应（见上方 restricted_net_tail 注释）：判假时 _net_tail 为空，
+  # 产物与改前逐字节一致
+  local _net_tail
+  _net_tail=$(restricted_net_tail)
   cat > "$SB_DIR/sb.json" <<EOF
 {
   "log": {"level": "info", "timestamp": true},
@@ -680,7 +762,7 @@ write_config() {
       }
     }
   ],
-  "outbounds": [{"type": "direct", "tag": "direct"}]
+  "outbounds": [{"type": "direct", "tag": "direct"}]${_net_tail}
 }
 EOF
   "$SB_DIR/sing-box" check -c "$SB_DIR/sb.json" >/dev/null 2>&1 \
@@ -866,7 +948,7 @@ start_argo() {
       armv7l) cf_arch="arm" ;;
       *) cf_arch="${ARCH:-amd64}" ;;
     esac
-    if ! curl -fSL --retry 2 -o "$cf" \
+    if ! curl -fSL --retry 2 --max-time 120 -o "$cf" \
       "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"; then
       echo "[警告] cloudflared 下载失败，跳过 Argo（不影响其他 5 种协议）"
       ARGO_DOMAIN=""
@@ -930,15 +1012,16 @@ get_ip() {
 b64() { base64 -w 0 2>/dev/null || base64 | tr -d '\n'; }
 
 print_links() {
-  local ip host
+  local ip host ip_bare
   ip="$(get_ip)"
+  ip_bare="${ip#[}"; ip_bare="${ip_bare%]}"   # 裸地址：仅 VMess 的 add 字段用（base64-JSON 不是 URI，不带方括号）
   host="$(hostname)"
 
   local vl_link vm_link hy2_link tuic_link an_link
   vl_link="vless://${UUID}@${ip}:${PORT_VLESS}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI_REALITY}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}&type=tcp&headerType=none#vl-reality-${host}"
 
   vm_link="vmess://$(printf '{"add":"%s","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s-vm","port":"%s","ps":"vm-ws-%s","tls":"","type":"none","v":"2"}' \
-    "$ip" "$SNI_SELF" "$UUID" "$UUID" "$PORT_VMESS" "$host" | b64)"
+    "$ip_bare" "$SNI_SELF" "$UUID" "$UUID" "$PORT_VMESS" "$host" | b64)"
 
   hy2_link="hysteria2://${UUID}@${ip}:${PORT_HY2}?security=tls&alpn=h3&insecure=1&allowInsecure=1&sni=${SNI_SELF}#hy2-${host}"
 
@@ -1113,6 +1196,45 @@ start_argo_fixed() {
   echo "[信息] 固定隧道域名：${ARGO_DOMAIN:-（未知）}"
 }
 
+# Argo 期望状态对齐检查：argo.env 声明的模式/令牌（或临时隧道的 VMess 端口）
+# 与现行 Argo 单元 ExecStart（无 systemd 时为 crontab @reboot 行）不一致、
+# 或单元/自启行缺失时返回 0（需要重建），一致返回 1。此前 restart 根本不碰
+# Argo，外部手改 argo.env 后跑多少次 restart 都不会生效，靠它在重启时发现。
+argo_unit_diverged() {
+  local _want _cur=""
+  if [[ -f "$SB_DIR/argo.env" ]] && grep -q '^ARGO_MODE="fixed"' "$SB_DIR/argo.env"; then
+    local _tok
+    _tok=$(grep '^ARGO_TOKEN=' "$SB_DIR/argo.env" 2>/dev/null | cut -d'"' -f2 || true)
+    _want="tunnel --no-autoupdate run --token $_tok"
+  else
+    _want="tunnel --url http://localhost:${PORT_VMESS}"
+  fi
+  if [[ -f "/etc/systemd/system/${ARGO_UNIT}.service" ]]; then
+    _cur=$(grep '^ExecStart=' "/etc/systemd/system/${ARGO_UNIT}.service" 2>/dev/null | sed 's/^ExecStart=//' || true)
+  elif command -v crontab >/dev/null 2>&1; then
+    _cur=$(crontab -l 2>/dev/null | grep '@reboot' | grep "$SB_DIR/cloudflared" || true)
+  fi
+  [[ -n "$_cur" && "$_cur" == *"$_want"* ]] && return 1
+  return 0
+}
+
+# 重启（菜单项 2 与 restart 动作共用）：本体重启后对齐 Argo 期望状态。
+# 配置无分歧时不扰动在跑的隧道——临时隧道一旦重连就会换域名、已分享的
+# 链接随之作废；仅当隧道没在运行时才按现行配置把它拉起来。
+do_restart() {
+  load_env_or_exit
+  setup_service
+  if argo_unit_diverged; then
+    echo "[信息] 检测到 Argo 配置与运行状态不一致，按 argo.env 重新生成"
+    start_argo
+  elif [[ -d /run/systemd/system ]] || pidof systemd >/dev/null 2>&1; then
+    systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null || start_argo
+  else
+    pgrep -f "$SB_DIR/cloudflared.*tunnel" >/dev/null 2>&1 || start_argo
+  fi
+  echo "[完成] 服务已重启"
+}
+
 # 7. Argo 隧道管理子菜单
 do_argo_menu() {
   load_env_or_exit
@@ -1131,20 +1253,20 @@ do_argo_menu() {
     else
       echo "当前模式：临时隧道（${ARGO_DOMAIN:-未建立}）"
     fi
-    echo "1. 重启临时隧道（获取新域名）"
-    echo "2. 设置固定隧道（需 Cloudflare Token）"
-    echo "3. 切换回临时隧道"
-    echo "4. 重新抓取隧道域名（隧道在跑但没显示域名时用）"
+    echo "1. 重新抓取隧道域名（隧道在跑但没显示域名时用）"
+    echo "2. 重启临时隧道（获取新域名）"
+    echo "3. 设置固定隧道（需 Cloudflare Token）"
+    echo "4. 切换回临时隧道"
     echo "0. 返回上级"
     read -rp "请选择 [0-4]: " c
     case "$c" in
-      1)
+      2)
         rm -f "$SB_DIR/argo.env"
         unset ARGO_MODE ARGO_TOKEN ARGO_DOMAIN
         start_argo
         print_links
         ;;
-      2)
+      3)
         local token domain
         read -rp "输入 Argo Tunnel Token: " token
         read -rp "输入固定隧道域名: " domain
@@ -1174,13 +1296,13 @@ EOF
         echo
         echo "[完成] 已切换到固定隧道：$domain"
         ;;
-      3)
+      4)
         rm -f "$SB_DIR/argo.env"
         unset ARGO_MODE ARGO_TOKEN ARGO_DOMAIN
         start_argo
         print_links
         ;;
-      4)
+      1)
         ARGO_DOMAIN="$(current_argo_domain)"
         if [[ -n "$ARGO_DOMAIN" ]]; then
           echo "[信息] 抓到域名：$ARGO_DOMAIN"
@@ -1336,26 +1458,30 @@ show_menu() {
     show_port_status
     echo
     echo "1. 查看节点链接"
+    echo
     echo "2. 重启 sing-box 服务"
-    echo "3. 更换 UUID（全协议）"
-    echo "4. 更换端口"
-    echo "5. 更新 Reality 密钥对"
-    echo "6. 更新自签证书"
-    echo "7. Argo 隧道管理"
+    echo "3. Argo 隧道管理"
+    echo
+    echo "4. 更换 UUID（全协议）"
+    echo "5. 更换端口"
+    echo "6. 更新 Reality 密钥对"
+    echo "7. 更新自签证书"
+    echo
     echo "8. 更新 sing-box 内核到最新版"
     echo "9. 更新脚本到最新版"
+    echo
     echo "10. 卸载"
     echo "0. 退出"
     echo "==================================================="
     read -rp "请选择 [0-10]: " choice
     case "$choice" in
       1) load_env_or_exit; print_links ;;
-      2) load_env_or_exit; setup_service; echo "[完成] 服务已重启" ;;
-      3) do_change_uuid ;;
-      4) do_change_ports ;;
-      5) do_change_reality ;;
-      6) do_change_cert ;;
-      7) do_argo_menu ;;
+      2) do_restart ;;
+      4) do_change_uuid ;;
+      5) do_change_ports ;;
+      6) do_change_reality ;;
+      7) do_change_cert ;;
+      3) do_argo_menu ;;
       8) detect_arch; if ! do_update_core; then echo "[提示] 内核更新未完成，见上方信息"; fi ;;
       9) if do_update_script; then exec /usr/local/bin/sbox menu; fi ;;
       10) do_uninstall; break ;;
@@ -1416,7 +1542,7 @@ case "$ACTION" in
     load_env_or_exit; print_links
     ;;
   restart)
-    load_env_or_exit; setup_service; echo "[完成] 服务已重启"
+    do_restart
     ;;
   update-script)
     do_update_script
