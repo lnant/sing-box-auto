@@ -2,28 +2,37 @@
 
 （[English](README.en.md)）
 
-sing-box 一键安装脚本，**全程零交互**，复制一条命令即可装好。参考互联网上相关 sing-box 一键脚本，去掉了所有交互式提问（端口、证书、内核版本、
-防火墙确认等），全部用合理默认值或自动生成的值代替。
+sing-box 一键安装脚本家族的统一发布仓：四个版本同仓发布，**全程零交互**，
+复制一条命令即可装好。各版本参考互联网上相关 sing-box 一键脚本，去掉了所有
+交互式提问（端口、证书、内核版本、防火墙确认等），全部用合理默认值或自动
+生成的值代替，按功能从全到简排列如下，按需选一。
 
 ## 四个版本（按需选一）
 
-本仓库是 sing-box 自动脚本家族的统一发布仓（原 sing-box-coexist、sing-box-mini 已并入，
-旧仓冻结归档，老安装不受影响）。
-
-| | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） | `sing-box-coexist.sh`（七合一） | `sing-box-mini.sh`（轻量版） |
+| | `sing-box-coexist.sh`（七合一） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） | `sing-box-mini.sh`（轻量版） |
 |---|---|---|---|---|
-| 协议 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality | 六合一 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、Hysteria2、Shadowsocks 2022 |
+| 协议 | 六合一全部 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality | VLESS+Reality、Hysteria2、Shadowsocks 2022 |
 | 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box | 定制编译（约 40M，官方约 78M） |
 | 占用 | 常规 | 常规 | 常规 | 装机约 40M、运行 34–47M |
-| 适合 | 多线路备用 | 只要一个节点 | 要域名链 + WARP | 小内存 / 小硬盘机器 |
-| 详细 | 本页下方 | 本页下方 | [COEXIST.md](COEXIST.md) | [MINI.md](MINI.md) |
+| 适合 | 要域名链 + WARP（功能最全） | 多线路备用 | 只要一个节点 | 小内存 / 小硬盘机器 |
+| 详细 | [COEXIST.md](COEXIST.md) | 本页下方 | 本页下方 | [MINI.md](MINI.md) |
 
-各版本用带前缀的 tag 发布（六合一/精简版 `v*`、七合一 `coexist-v*`、轻量版 `mini-v*`、
-轻量版核心 `core-v*`），发布页在一起、更新互不串版。
+各版本在同一发布页用带前缀的 tag 区分（七合一 `coexist-v*`、六合一/精简版 `v*`、
+轻量版 `mini-v*`、轻量版核心 `core-v*`），各自更新、互不串版。
+
+本仓由原 sing-box-auto、sing-box-coexist、sing-box-mini 三仓于 2026-11-07 合并
+而成，旧仓已删除。已安装的机器运行不受影响，但旧版脚本里的「更新脚本」地址已
+失效，请改用本页的新版安装地址引导一次，之后即可正常自更新。
 
 ## 一键安装
 
-Argo 六合一版：
+七合一版（TLS + Argo 共存，含 WARP，功能最全）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
+```
+
+六合一版：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-auto.sh | sudo bash
@@ -33,12 +42,6 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-a
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-vless.sh | sudo bash
-```
-
-七合一版（TLS + Argo 共存，含 WARP）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
 ```
 
 轻量版（50M 级三协议，定制核心）：
@@ -60,23 +63,31 @@ x86_64 / arm64 / armv7 架构。另外：
 
 ## 版本
 
-当前版本：**v1.1.1**（变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 GitHub Releases）。
-已安装的机器上运行 `sbox version` 可查看脚本版本号。
+当前版本：六合一/精简版 **v1.1.2**、七合一 **coexist-v1.1.2**、
+轻量版 **mini-v0.1.0**（核心 core-v1.14.4）。变更记录见
+[CHANGELOG.md](CHANGELOG.md)、[CHANGELOG-coexist.md](CHANGELOG-coexist.md)、
+[CHANGELOG-mini.md](CHANGELOG-mini.md)，发布包见 GitHub Releases。
+已安装的机器上运行 `sbox version`（轻量版 `sbm version`）可查看脚本版本号。
 
 一键安装默认拉取最新版（main 分支）。若想固定在某个已发布版本（例如新版有问题时回退），
-把命令里的 `main` 换成版本号 tag 即可：
+把命令里的 `main` 换成对应的版本 tag 即可：
 
-Argo 六合一版（固定 v1.1.0）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.0/sing-box-auto.sh | sudo bash
-```
-
-精简版（固定 v1.1.0）：
+六合一版（固定 v1.1.2）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.0/sing-box-vless.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.2/sing-box-auto.sh | sudo bash
 ```
+
+精简版（固定 v1.1.2）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.2/sing-box-vless.sh | sudo bash
+```
+
+## 六合一 / 精简版详细说明
+
+以下各节是六合一与精简版的细节；七合一见 [COEXIST.md](COEXIST.md)，
+轻量版见 [MINI.md](MINI.md)。
 
 ## 端口（随机分配）
 
@@ -120,7 +131,7 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.0/sing-box
 
 ## 管理菜单与快捷命令
 
-Argo 六合一版安装时会自动装好 `sbox` 快捷命令，之后管理不需要再下载脚本：
+六合一版安装时会自动装好 `sbox` 快捷命令，之后管理不需要再下载脚本：
 
 ```bash
 sbox            # 进入管理菜单（opc 下打会自动 sudo 提权）
@@ -174,7 +185,7 @@ SELinux 的 Permissive 设置、被禁用的 `dnf-makecache` 定时器、无 sys
 
 ## 注意事项
 
-1. **两个版本二选一**，不要在同一台机器上混装——后装的会覆盖 `/etc/s-box/sb.json`。
+1. **六合一与精简版二选一**，不要在同一台机器上混装——后装的会覆盖 `/etc/s-box/sb.json`。
    共用 `/etc/s-box/auto.env`，切换版本时 UUID 和 VLESS 端口保持不变，旧链接继续有效。
 2. **Oracle Cloud / 其他云厂商**：脚本只放行系统防火墙，云控制台的安全组/安全列表
    里也需要放行对应端口，否则外网连不上。
@@ -192,3 +203,11 @@ SELinux 的 Permissive 设置、被禁用的 `dnf-makecache` 定时器、无 sys
    损坏）的机器会先自动跑一段引导——把 DNS 换成公共 DNS64（nat64.net）经 NAT64
    绕行下载（改前备份到 /etc/resolv.conf.sbox-bak、失败自动还原），通了再继续装；
    无 IPv6 出站时也可把二进制预置到 /etc/s-box/ 下，脚本会跳过下载。
+
+## 许可证与上游
+
+四个版本都基于 [sing-box](https://github.com/SagerNet/sing-box)——或装官方二进制，
+或（轻量版）从其源码定制编译。sing-box 版权所有 © nekohasekai
+<contact-sagernet@sekai.icu>，依 GNU 通用公共许可证 v3（GPLv3）发布，
+上游许可证全文见 [LICENSE-sing-box.txt](LICENSE-sing-box.txt)，
+轻量版核心的 Release 附件中亦附带该文件。

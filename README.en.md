@@ -2,18 +2,31 @@
 
 One-command, **fully unattended** installers for [sing-box](https://sing-box.sagernet.org/).
 No interactive prompts: ports, certificates, UUIDs and keys are generated automatically
-with sensible defaults. ([中文说明](README.md))
+with sensible defaults. This repository is the family's single release home:
+four editions, one Releases page, prefix-tagged versions. ([中文说明](README.md))
 
 ## Editions
 
-| | `sing-box-auto.sh` (Argo 6-in-1) | `sing-box-vless.sh` (lite) |
-|---|---|---|
-| Protocols | VLESS+Reality, VMess+WS, VMess+Argo tunnel, Hysteria2, TUIC, AnyTLS | VLESS+Reality only |
-| Best for | Multiple fallback routes | A single, simple node |
+| | `sing-box-coexist.sh` (7-in-1) | `sing-box-auto.sh` (6-in-1) | `sing-box-vless.sh` (lite) | `sing-box-mini.sh` (mini) |
+|---|---|---|---|---|
+| Protocols | 6-in-1 set + VLESS+WS+TLS domain route (coexists with Argo), WARP egress | VLESS+Reality, VMess+WS, VMess+Argo tunnel, Hysteria2, TUIC, AnyTLS | VLESS+Reality only | VLESS+Reality, Hysteria2, Shadowsocks 2022 |
+| Core | Official sing-box | Official sing-box | Official sing-box | Custom build (~40 MB vs ~78 MB official) |
+| Best for | Domain route + WARP (most complete) | Multiple fallback routes | A single, simple node | Tiny RAM / disk machines |
+| Details | [COEXIST.md](COEXIST.md) | Below | Below | [MINI.md](MINI.md) |
+
+Versions are prefix-tagged on one Releases page: `coexist-v*` (7-in-1), `v*` (6-in-1 /
+lite), `mini-v*` (mini script), `core-v*` (mini core). Each edition self-updates
+within its own prefix.
 
 ## Install
 
-Argo 6-in-1 edition:
+7-in-1 edition (TLS + Argo coexisting, with WARP):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
+```
+
+6-in-1 edition:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-auto.sh | sudo bash
@@ -25,14 +38,24 @@ Lite edition (VLESS + Reality only):
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-vless.sh | sudo bash
 ```
 
+Mini edition (50 MB-class, three protocols, custom core):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-mini.sh | sudo bash
+```
+
 Requirements: a Linux server (Debian / Ubuntu / CentOS / Oracle Linux, etc.), **root**,
 x86_64 / arm64 / armv7. ≥1 GB RAM recommended (add swap below that). With systemd,
 the service and the Argo tunnel are systemd-managed (auto-restart on crash); without
 systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
-e.g. `.../sing-box-auto/v1.1.0/sing-box-auto.sh`. Current version: **v1.1.1**
-(see [CHANGELOG.md](CHANGELOG.md) and GitHub Releases).
+e.g. `.../sing-box-auto/v1.1.2/sing-box-auto.sh`. Current versions: **v1.1.2** (6-in-1 /
+lite), **coexist-v1.1.2**, **mini-v0.1.0** (core-v1.14.4). See the CHANGELOG files and
+GitHub Releases.
+
+The detailed sections below cover the 6-in-1 and lite editions; see
+[COEXIST.md](COEXIST.md) for the 7-in-1 and [MINI.md](MINI.md) for mini.
 
 ## After install
 
@@ -92,8 +115,15 @@ timer (all harmless leftovers; remove manually if you care).
 
 ## Notes
 
-- Do not install both editions on one machine — they share `/etc/s-box/`.
+- Do not install the 6-in-1 and lite editions on one machine — they share `/etc/s-box/`.
 - Links for self-signed-certificate protocols carry `insecure=1` (certificate
   verification skipped; the UUID is the actual credential). Keep links private.
 - Features common in similar scripts — WARP routing, subscriptions, Telegram
   notifications — are intentionally left out. Core proxying only.
+
+## License
+
+All editions are built on [sing-box](https://github.com/SagerNet/sing-box)
+(© nekohasekai, GPLv3) — either the official binary or, for mini, a custom build
+from its source. The upstream license ships in
+[LICENSE-sing-box.txt](LICENSE-sing-box.txt) and with the mini core releases.

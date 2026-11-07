@@ -4,8 +4,8 @@
 
 sing-box 一键安装脚本，**全程零交互**，复制一条命令即可装好 7 种协议。
 
-本项目参考 [lnant/sing-box-auto](https://github.com/lnant/sing-box-auto)（六合一版）改造：
-在原有 6 种协议之外，新增一条 **VLESS + WebSocket + TLS 域名链**，与 **Argo 隧道链共存**——
+本版本在同仓六合一 `sing-box-auto.sh` 的基础上改造：在原有 6 种协议之外，
+新增一条 **VLESS + WebSocket + TLS 域名链**，与 **Argo 隧道链共存**——
 域名链可直连或套 Cloudflare，Argo 走隧道，两条链路互为备份，一条被干扰另一条还能用。
 
 ## 协议一览
@@ -47,8 +47,8 @@ x86_64 / arm64 / armv7 架构，内存建议 ≥1 GB。
 
 ## 资源占用
 
-实测（1 OCPU / 6 GB 机器）：sing-box 约 15 MB + cloudflared 约 23 MB 内存，
-合计不到 40 MB，不影响同机其他服务；服务与隧道由 systemd 托管（崩溃自动拉起），
+实测（cgroup 口径）：sing-box 约 38 MB + cloudflared 约 38 MB 内存，
+合计约 72–76 MB，不影响同机其他服务；服务与隧道由 systemd 托管（崩溃自动拉起），
 无 systemd 时以 cron `@reboot` 兜底。
 
 ## 管理
@@ -73,6 +73,10 @@ sbox version            # 查看版本
 
 ## 版本
 
-当前版本：**v1.1.1**（变更记录见 [CHANGELOG.md](CHANGELOG.md)，发布包见 GitHub Releases）。
-一键安装默认拉取最新版（main 分支）；把命令里的 `main` 换成版本号 tag（如 `v1.0.0`）
-即可固定版本安装。
+当前版本：**coexist-v1.1.2**（变更记录见 [CHANGELOG-coexist.md](CHANGELOG-coexist.md)，
+发布包见 GitHub Releases）。
+一键安装默认拉取最新版（main 分支）；把命令里的 `main` 换成版本 tag
+（如 `coexist-v1.1.2`）即可固定版本安装。
+
+基于 [sing-box](https://github.com/SagerNet/sing-box)（© nekohasekai，GPLv3），
+上游许可证见 [LICENSE-sing-box.txt](LICENSE-sing-box.txt)。
