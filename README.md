@@ -5,13 +5,21 @@
 sing-box 一键安装脚本，**全程零交互**，复制一条命令即可装好。参考互联网上相关 sing-box 一键脚本，去掉了所有交互式提问（端口、证书、内核版本、
 防火墙确认等），全部用合理默认值或自动生成的值代替。
 
-## 两个版本（二选一）
+## 四个版本（按需选一）
 
-| | `sing-box-auto.sh`（Argo 六合一版） | `sing-box-vless.sh`（精简版） |
-|---|---|---|
-| 用途 | 一次装好全部 6 种协议 | 只装 VLESS + Reality，最省心 |
-| 协议 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality |
-| 适合 | 想多条线路备用 | 只要一个能用的节点 |
+本仓库是 sing-box 自动脚本家族的统一发布仓（原 sing-box-coexist、sing-box-mini 已并入，
+旧仓冻结归档，老安装不受影响）。
+
+| | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） | `sing-box-coexist.sh`（七合一） | `sing-box-mini.sh`（轻量版） |
+|---|---|---|---|---|
+| 协议 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality | 六合一 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、Hysteria2、Shadowsocks 2022 |
+| 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box | 定制编译（约 40M，官方约 78M） |
+| 占用 | 常规 | 常规 | 常规 | 装机约 40M、运行 34–47M |
+| 适合 | 多线路备用 | 只要一个节点 | 要域名链 + WARP | 小内存 / 小硬盘机器 |
+| 详细 | 本页下方 | 本页下方 | [COEXIST.md](COEXIST.md) | [MINI.md](MINI.md) |
+
+各版本用带前缀的 tag 发布（六合一/精简版 `v*`、七合一 `coexist-v*`、轻量版 `mini-v*`、
+轻量版核心 `core-v*`），发布页在一起、更新互不串版。
 
 ## 一键安装
 
@@ -25,6 +33,18 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-a
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-vless.sh | sudo bash
+```
+
+七合一版（TLS + Argo 共存，含 WARP）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
+```
+
+轻量版（50M 级三协议，定制核心）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-mini.sh | sudo bash
 ```
 
 要求：Linux 服务器（Debian / Ubuntu / CentOS / Oracle Linux 等），**root 权限**，

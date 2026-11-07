@@ -3,6 +3,11 @@
 本项目的版本号同时写在两个脚本的 `SCRIPT_VERSION` 里，并与 GitHub 的 tag / Release 对应。
 一键安装默认拉最新版（main 分支）；把安装命令里的 `main` 换成某个 tag（如 `v1.1.0`）即可固定版本安装。
 
+## v1.1.2（2026-11-07）
+
+- **仓库整合**：原 sing-box-coexist（七合一）与 sing-box-mini（轻量版）并入本仓统一发布。七合一脚本更名为 `sing-box-coexist.sh`、以 `coexist-v*` 发版；轻量版为 `sing-box-mini.sh`、以 `mini-v*` 发版，其定制核心以 `core-v*` 发版。
+- **修复**：六合一脚本自更新改为按 `v*` 前缀在 Release 列表中取版，避免与同仓其他产品线的 Release 串版；精简版仅同步版本号。
+
 ## v1.1.1（2026-11-06）
 
 本版仅 `sing-box-auto.sh`（六合一版）有功能更新；`sing-box-vless.sh`（精简版）仅同步版本号，无功能变化。

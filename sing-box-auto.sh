@@ -43,7 +43,7 @@ else
   ACTION="${1:-install}"        # install | uninstall | menu | change-uuid | change-reality | change-cert | change-argo | change-ports | show-links | restart | update-script | update-core | version
 fi
 
-SCRIPT_VERSION="1.1.1"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.1.2"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 
 # version 动作只打印版本，不需要 root / 已安装，提前处理
 if [[ "$ACTION" == "version" ]]; then
@@ -438,7 +438,7 @@ fetch_latest_script() {
   ts=$(date +%s)
   # 优先跟随最新 Release（tag），避免 main 上未发布的改动直接打到已安装机器；取不到 tag 再回退 main
   local tag=""
-  tag=$(curl -fsSL --max-time 15 https://api.github.com/repos/lnant/sing-box-auto/releases/latest 2>/dev/null | jq -r '.tag_name // empty' 2>/dev/null || true)
+  tag=$(curl -fsSL --max-time 15 "https://api.github.com/repos/lnant/sing-box-auto/releases?per_page=30" 2>/dev/null | jq -r '.[].tag_name' 2>/dev/null | grep -m1 '^v[0-9]' || true)
   local urls=()
   if [[ -n "$tag" ]]; then
     urls+=(
