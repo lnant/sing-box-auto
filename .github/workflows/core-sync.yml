@@ -1,0 +1,75 @@
+name: core-sync
+# 每周检查 sing-box 上游新版本：有新版则用与 build.sh 相同的参数自动编译
+# 双架构、跑冒烟测试（配置校验 + 密钥生成），通过后生成 Draft Release。
+# 转正发布需人工确认，避免上游坏版本自动推给用户。
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  check-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 读取当前锁定版本
+        id: cur
+        run: echo "ver=$(cat CORE_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: 查询上游最新正式版
+        id: up
+        run: |
+          tag=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest | jq -r .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "上游最新：$tag，仓库锁定：v${{ steps.cur.outputs.ver }}"
+      - name: 判断是否需要构建
+        id: need
+        run: |
+          if [ "${{ steps.up.outputs.tag }}" != "v${{ steps.cur.outputs.ver }}" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "已是最新，跳过"
+          fi
+      - uses: actions/setup-go@v5
+        if: steps.need.outputs.build == 'true'
+        with:
+          go-version: stable
+      - name: 编译双架构
+        if: steps.need.outputs.build == 'true'
+        run: |
+          git clone --depth 1 --branch "${{ steps.up.outputs.tag }}" https://github.com/SagerNet/sing-box.git src
+          cd src
+          export CGO_ENABLED=0 GOFLAGS=-mod=mod
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH=$arch go build -trimpath -ldflags "-s -w -buildid=" \
+              -tags "with_quic,with_wireguard,with_utls,with_acme" \
+              -o "../sing-box-mini-linux-$arch" ./cmd/sing-box
+          done
+          cd ..
+          sha256sum sing-box-mini-linux-amd64 sing-box-mini-linux-arm64 > SHA256SUMS
+          ls -l sing-box-mini-linux-*
+      - name: 冒烟测试（amd64)
+        if: steps.need.outputs.build == 'true'
+        run: |
+          ./sing-box-mini-linux-amd64 version
+          ./sing-box-mini-linux-amd64 generate uuid >/dev/null
+          ./sing-box-mini-linux-amd64 generate reality-keypair >/dev/null
+          cat > /tmp/smoke.json <<'JSON'
+          {"log":{"level":"error"},
+           "inbounds":[
+             {"type":"vless","tag":"r","listen":"::","listen_port":24443,"users":[{"uuid":"ab968b13-1fe7-4d10-baa8-7a3958d84421","flow":"xtls-rprx-vision"}],"tls":{"enabled":true,"server_name":"apple.com","reality":{"enabled":true,"handshake":{"server":"apple.com","server_port":443},"private_key":"4PzY7VM_AuT0JSD4KmLjOAN9qad9cj1ZJTBchZID90k","short_id":["dd0e9589"]}}},
+             {"type":"shadowsocks","tag":"s","listen":"::","listen_port":26443,"method":"2022-blake3-aes-128-gcm","password":"AAAAAAAAAAAAAAAAAAAAAA=="}],
+           "outbounds":[{"type":"direct","tag":"direct"}]}
+          JSON
+          ./sing-box-mini-linux-amd64 check -c /tmp/smoke.json
+          echo "smoke ok"
+      - name: 生成 Draft Release
+        if: steps.need.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "core-${{ steps.up.outputs.tag }}" --draft \
+            --title "core ${{ steps.up.outputs.tag }}（自动构建，待人工转正）" \
+            --notes "上游 sing-box ${{ steps.up.outputs.tag }} 定制编译（tags: with_quic,with_wireguard,with_utls,with_acme）。自动冒烟测试已通过；转正前请先实测，转正后把 CORE_VERSION 更新为新版本号（去掉 v）。" \
+            sing-box-mini-linux-amd64 sing-box-mini-linux-arm64 SHA256SUMS
