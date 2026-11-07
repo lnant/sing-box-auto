@@ -1,5 +1,3 @@
-> **本项目已并入统一发布仓 [sing-box-auto](https://github.com/lnant/sing-box-auto)**（2026-11-07）：脚本更名为 `sing-box-coexist.sh`，版本以 `coexist-v*` 发布；功能与用法不变。
-
 # sing-box-coexist
 
 sing-box 一键安装脚本，**全程零交互**，复制一条命令即可装好 7 种协议。

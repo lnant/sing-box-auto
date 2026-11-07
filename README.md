@@ -20,10 +20,6 @@ sing-box 一键安装脚本家族的统一发布仓：四个版本同仓发布�
 各版本在同一发布页用带前缀的 tag 区分（七合一 `coexist-v*`、六合一/精简版 `v*`、
 轻量版 `mini-v*`、轻量版核心 `core-v*`），各自更新、互不串版。
 
-本仓由原 sing-box-auto、sing-box-coexist、sing-box-mini 三仓于 2026-11-07 合并
-而成，旧仓已删除。已安装的机器运行不受影响，但旧版脚本里的「更新脚本」地址已
-失效，请改用本页的新版安装地址引导一次，之后即可正常自更新。
-
 ## 一键安装
 
 七合一版（TLS + Argo 共存，含 WARP，功能最全）：
@@ -148,7 +144,7 @@ sbox <动作>     # 直接执行：change-uuid | change-reality | change-cert
 自动回滚；精简版用 `sing-box-vless.sh update-core`。
 
 systemd 服务名为 `sing-box-auto`（精简版为 `sing-box-vless`），不会覆盖机器上
-已有的其他 sing-box 安装；从旧版本升级时，本脚本自己的旧 `sing-box` 服务会自动迁移改名。
+已有的其他 sing-box 安装。
 
 ## 卸载
 
@@ -159,7 +155,7 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-a
 （精简版把 URL 换成 `sing-box-vless.sh` 即可。）
 
 卸载会删除：sing-box 本体与全部配置（`/etc/s-box`）、链接文件、systemd 服务
-（含 Argo 托管服务与本脚本自己的旧版服务）、`sbox` 命令、crontab 自启项。
+（含 Argo 托管服务）、`sbox` 命令、crontab 自启项。
 
 卸载**不会**恢复或处理以下安装时留下的系统状态（如介意请手动处理）：
 已添加的防火墙放行规则（留在 iptables/firewalld 里无害，想清可手动删除）、
