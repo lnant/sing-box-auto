@@ -71,5 +71,5 @@ jobs:
         run: |
           gh release create "core-${{ steps.up.outputs.tag }}" --draft \
             --title "core ${{ steps.up.outputs.tag }}（自动构建，待人工转正）" \
-            --notes "上游 sing-box ${{ steps.up.outputs.tag }} 定制编译（tags: with_quic,with_wireguard,with_utls,with_acme）。自动冒烟测试已通过；转正前请先实测，转正后把 CORE_VERSION 更新为新版本号（去掉 v）。" \
-            sing-box-mini-linux-amd64 sing-box-mini-linux-arm64 SHA256SUMS
+            --notes "上游 sing-box ${{ steps.up.outputs.tag }} 定制编译（tags: with_quic,with_wireguard,with_utls,with_acme）。自动冒烟测试已通过；转正前请先实测，转正后把 CORE_VERSION 更新为新版本号（去掉 v）。核心基于 sing-box（© nekohasekai，GPLv3），许可证见附件 LICENSE-sing-box.txt。" \
+            sing-box-mini-linux-amd64 sing-box-mini-linux-arm64 SHA256SUMS LICENSE-sing-box.txt
