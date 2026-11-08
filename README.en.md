@@ -51,7 +51,7 @@ systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
 e.g. `.../sing-box-auto/v1.1.2/sing-box-auto.sh`. Current versions: **v1.1.2** (6-in-1 /
-lite), **coexist-v1.1.2**, **mini-v0.1.0** (core-v1.14.4). See the CHANGELOG files and
+lite), **coexist-v1.1.2**, **mini-v0.1.1** (core-v1.14.4). See the CHANGELOG files and
 GitHub Releases.
 
 The detailed sections below cover the 6-in-1 and lite editions; see

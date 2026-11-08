@@ -23,7 +23,11 @@
 set -euo pipefail
 
 ACTION="${1:-install}"
-SCRIPT_VERSION="0.1.0"
+# 通过 sbm 快捷命令调用且无参数时默认进菜单；其他方式（脚本文件/管道）无参数默认执行安装
+if [[ $# -eq 0 && "$(basename "$0")" == "sbm" ]]; then
+  ACTION="menu"
+fi
+SCRIPT_VERSION="0.1.1"
 CORE_VERSION_DEFAULT="1.14.4"   # 仓库尚无更新的核心 Release 时的兜底版本
 REPO="lnant/sing-box-auto"
 
@@ -192,10 +196,13 @@ port_in_use() {
 }
 
 rand_port() {
-  local p tries=0
+  # 参数 $1：已分配端口列表（空格分隔，如 " 12345 23456 "），避免三协议连抽互相撞号：
+  # 连抽的端口在写配置/启动服务前都还没监听，port_in_use 查不到彼此，必须靠这份列表互斥
+  # 无参调用时 $1 未绑定，set -u 下会直接炸，用 ${1:-} 容错
+  local allocated="${1:-}" p tries=0
   while (( tries < 100 )); do
     p=$(( (RANDOM * 32768 + RANDOM) % 50001 + 10000 ))
-    if ! port_in_use "$p"; then echo "$p"; return 0; fi
+    if [[ "$allocated" != *" $p "* ]] && ! port_in_use "$p"; then echo "$p"; return 0; fi
     tries=$((tries + 1))
   done
   echo "[错误] 无法分配随机空闲端口" >&2
@@ -345,9 +352,12 @@ gen_identity() {
   if [[ -z "$PRIVKEY" || -z "$PUBKEY" || -z "$SHORTID" || -z "$HY2_PASS" || -z "$SS_KEY" ]]; then
     echo "[错误] 密钥/密码生成失败"; exit 1
   fi
-  PORT_REALITY=$(rand_port) || { echo "[错误] 端口分配失败"; exit 1; }
-  PORT_HY2=$(rand_port) || { echo "[错误] 端口分配失败"; exit 1; }
-  PORT_SS=$(rand_port) || { echo "[错误] 端口分配失败"; exit 1; }
+  local used=" "
+  PORT_REALITY=$(rand_port "$used") || { echo "[错误] 端口分配失败"; exit 1; }
+  used+=" $PORT_REALITY "
+  PORT_HY2=$(rand_port "$used") || { echo "[错误] 端口分配失败"; exit 1; }
+  used+=" $PORT_HY2 "
+  PORT_SS=$(rand_port "$used") || { echo "[错误] 端口分配失败"; exit 1; }
   echo "[信息] 端口分配：Reality=$PORT_REALITY HY2=$PORT_HY2 SS=$PORT_SS"
   save_env
 }
@@ -548,6 +558,13 @@ EOF
 restart_service() {
   if systemctl is-active --quiet "$UNIT" 2>/dev/null || [[ -f "/etc/systemd/system/${UNIT}.service" ]]; then
     systemctl restart "$UNIT" && echo "[信息] 已重启" || echo "[错误] 重启失败"
+    # 重启后验活（与 setup_service 对齐）：systemctl restart 返回成功不等于进程
+    # 活着——新配置若端口冲突，进程随即退出，不验活就会打印新链接报喜（静默失败）
+    sleep 2
+    if ! systemctl is-active --quiet "$UNIT"; then
+      echo "[错误] 重启后服务未运行，日志如下："
+      journalctl -u "$UNIT" --no-pager -n 20 2>/dev/null || true
+    fi
   else
     pkill -f "$SB_DIR/sing-box run" >/dev/null 2>&1 || true
     sleep 1
@@ -675,7 +692,10 @@ do_menu() {
       2) restart_service ;;
       3)
         . "$ENV_FILE"
-        PORT_REALITY=$(rand_port); PORT_HY2=$(rand_port); PORT_SS=$(rand_port)
+        local used=" "
+        PORT_REALITY=$(rand_port "$used"); used+=" $PORT_REALITY "
+        PORT_HY2=$(rand_port "$used"); used+=" $PORT_HY2 "
+        PORT_SS=$(rand_port "$used")
         save_env; write_config; open_firewall; restart_service; print_links
         ;;
       4)

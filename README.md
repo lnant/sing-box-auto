@@ -60,7 +60,7 @@ x86_64 / arm64 / armv7 架构。另外：
 ## 版本
 
 当前版本：六合一/精简版 **v1.1.2**、七合一 **coexist-v1.1.2**、
-轻量版 **mini-v0.1.0**（核心 core-v1.14.4）。变更记录见
+轻量版 **mini-v0.1.1**（核心 core-v1.14.4）。变更记录见
 [CHANGELOG.md](CHANGELOG.md)、[CHANGELOG-coexist.md](CHANGELOG-coexist.md)、
 [CHANGELOG-mini.md](CHANGELOG-mini.md)，发布包见 GitHub Releases。
 已安装的机器上运行 `sbox version`（轻量版 `sbm version`）可查看脚本版本号。
