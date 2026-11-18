@@ -52,7 +52,7 @@ else
   ACTION="${1:-install}"        # install | uninstall | menu | change-uuid | change-reality | change-cert | change-argo | change-domain | change-ports | show-links | restart | update-script | update-core | version
 fi
 
-SCRIPT_VERSION="1.1.3"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.1.4"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 INPUT_TIMEOUT=60                # 输入类等待秒数：60 秒无输入自动按默认走下一步
 CHOICE_TIMEOUT=20               # 选择类等待秒数：20 秒无选择/回车一律取默认选择
 
@@ -1842,6 +1842,14 @@ print_links() {
   local vl_link vm_link hy2_link tuic_link an_link vt_link
   local _vt_host="${TLS_DOMAIN:-$SNI_SELF}" _vt_addr="${TLS_DOMAIN:-$ip}" _vt_ins="&allowInsecure=1"
   [[ "${TLS_ACME:-0}" == "1" ]] && _vt_ins=""
+  # TLS 域名是本脚本套的 CF（cf.env 里记有 CF_HOST 且非 direct 直连模式）时，
+  # 输出节点地址默认用 CF 通用保底地址 cloudflare-ech.com（与 Argo 同口径）：
+  # sni/host 仍是本域名、CF 按 SNI 回源，但入口强制经 CF，不再直连源站——
+  # 源站 IP+端口在客户端到源站这段路上被干扰时（如回程被丢），经 CF 即绕开。
+  if [[ -n "${TLS_DOMAIN:-}" && "${TLS_ACME_MODE:-cf}" != "direct" && -f "$CF_ENV_FILE" ]] \
+     && grep -q "^CF_HOST=\"${TLS_DOMAIN}\"" "$CF_ENV_FILE" 2>/dev/null; then
+    _vt_addr="cloudflare-ech.com"
+  fi
   vt_link="vless://${UUID}@${_vt_addr}:${PORT_VTLS:-443}?encryption=none&security=tls&sni=${_vt_host}&fp=chrome&type=ws&host=${_vt_host}&path=${UUID}-vt${_vt_ins}#vl-ws-tls-${host}"
   vl_link="vless://${UUID}@${ip}:${PORT_VLESS}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI_REALITY}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}&type=tcp&headerType=none#vl-reality-${host}"
 
