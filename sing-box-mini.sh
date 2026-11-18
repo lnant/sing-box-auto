@@ -27,7 +27,7 @@ ACTION="${1:-install}"
 if [[ $# -eq 0 && "$(basename "$0")" == "sbm" ]]; then
   ACTION="menu"
 fi
-SCRIPT_VERSION="0.1.1"
+SCRIPT_VERSION="0.1.2"
 CORE_VERSION_DEFAULT="1.14.4"   # 仓库尚无更新的核心 Release 时的兜底版本
 REPO="lnant/sing-box-auto"
 
@@ -242,15 +242,46 @@ restricted_net_env() {
   return 0
 }
 
-# 受限时给配置追加的顶层 dns + route 段（普通 UDP 指向系统解析 + 关接口枚举）；
-# 非受限输出空——正常机器生成的配置与无此段时完全一致
+# 无 IPv6 出口检测：无全局 IPv6 地址、且无 IPv6 默认路由才判真。纯结构判断、
+# 不发包探测；命令缺失一律判假（宁可漏报不可误报，与受限检测同一口径）。
+# 背景（2026-11-19 实测）：这类机器（如部分云厂商的纯 IPv4 实例）没有 IPv6
+# 出口，客户端发来的 IPv6 目标连接必然 network unreachable——手机等客户端
+# 自带 IPv6、常把域名解析成 v6 地址直发过来，失败后未必回落 v4，体感就是
+# 「节点时好时坏」；而安装时的历次验证用的都是域名目标（解析走 v4），验不出。
+no_v6_egress() {
+  command -v ip >/dev/null 2>&1 || return 1
+  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then return 1; fi
+  if [[ -n "$(ip -6 route show default 2>/dev/null)" ]]; then return 1; fi
+  return 0
+}
+
+# 给配置追加的顶层 dns + route 段；两类自适应都没命中时输出空——正常机器
+# 生成的配置与无此段时完全一致。两类可叠加、共用同一个 dns/route 对象：
+#  ① 受限网络（restricted_net_env）：dns 走普通 UDP 指向系统解析（type
+#     "local" 在受限环境实测无效），route 关接口探测并写死默认网卡；
+#  ② 无 IPv6 出口（no_v6_egress）：默认解析策略 ipv4_only（域名不再解析出
+#     v6），并给 IPv6 目标加 reject 规则，让客户端立刻失败回落 v4、不干等。
 restricted_net_tail() {
-  restricted_net_env || return 0
-  local _ns _dev _route="\"auto_detect_interface\": false"
-  _ns=$(restricted_net_nameserver)
-  _dev=$(restricted_net_dev)
-  if [[ -n "$_dev" ]]; then _route="$_route, \"default_interface\": \"$_dev\""; fi
-  printf ',\n  "dns": {"servers": [{"type": "udp", "server": "%s", "tag": "sys"}], "final": "sys"},\n  "route": {%s}' "$_ns" "$_route"
+  local _restricted=0 _nov6=0
+  if restricted_net_env; then _restricted=1; fi
+  if no_v6_egress; then _nov6=1; fi
+  (( _restricted == 1 || _nov6 == 1 )) || return 0
+  local _route="" _dns=""
+  if (( _restricted == 1 )); then
+    local _ns _dev
+    _ns=$(restricted_net_nameserver)
+    _dev=$(restricted_net_dev)
+    _route="\"auto_detect_interface\": false"
+    if [[ -n "$_dev" ]]; then _route="$_route, \"default_interface\": \"$_dev\""; fi
+    _dns="\"dns\": {\"servers\": [{\"type\": \"udp\", \"server\": \"$_ns\", \"tag\": \"sys\"}], \"final\": \"sys\"}"
+    if (( _nov6 == 1 )); then
+      _route="$_route, \"default_domain_resolver\": {\"server\": \"sys\", \"strategy\": \"ipv4_only\"}, \"rules\": [{\"ip_version\": 6, \"action\": \"reject\"}]"
+    fi
+  else
+    _dns="\"dns\": {\"servers\": [{\"type\": \"local\", \"tag\": \"local\"}]}"
+    _route="\"default_domain_resolver\": {\"server\": \"local\", \"strategy\": \"ipv4_only\"}, \"rules\": [{\"ip_version\": 6, \"action\": \"reject\"}], \"final\": \"direct\""
+  fi
+  printf ',\n  %s,\n  "route": {%s}' "$_dns" "$_route"
 }
 
 #----------------------------- 5. 定制核心 -----------------------------------
@@ -391,7 +422,8 @@ write_config() {
   echo "[信息] 写入 sing-box 配置（三协议）…"
   local tail
   tail=$(restricted_net_tail)
-  [[ -n "$tail" ]] && echo "[信息] 检测到受限容器网络，已启用系统 DNS 自适应"
+  if restricted_net_env; then echo "[信息] 检测到受限容器网络，已启用系统 DNS 自适应"; fi
+  if no_v6_egress; then echo "[信息] 检测到本机无 IPv6 出口，已启用 IPv4 优先解析（IPv6 目标快速失败、回落 v4）"; fi
   cat > "$SB_DIR/sb.json" <<EOF
 {
   "log": {"level": "info", "timestamp": true},

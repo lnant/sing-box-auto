@@ -52,7 +52,7 @@ else
   ACTION="${1:-install}"        # install | uninstall | menu | change-uuid | change-reality | change-cert | change-argo | change-domain | change-ports | show-links | restart | update-script | update-core | version
 fi
 
-SCRIPT_VERSION="1.1.2"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.1.3"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 INPUT_TIMEOUT=60                # 输入类等待秒数：60 秒无输入自动按默认走下一步
 CHOICE_TIMEOUT=20               # 选择类等待秒数：20 秒无选择/回车一律取默认选择
 
@@ -1389,18 +1389,61 @@ restricted_net_env() {
   return 0
 }
 
-# 受限时 write_config 追加的 JSON 尾段（顶层 dns + route）；非受限输出空。
-# $1 可选：调用方既有的 route 内字段（如 WARP 的 rules/final），非空时并入
-# 同一个 route 对象，避免顶层出现两个 "route" 键；default_interface 取不到时
-# 只写 auto_detect_interface。
+# 无 IPv6 出口检测：无全局 IPv6 地址、且无 IPv6 默认路由才判真。纯结构判断、
+# 不发包探测；命令缺失一律判假（宁可漏报不可误报，与受限检测同一口径）。
+# 背景（2026-11-19 实测）：这类机器（如部分云厂商的纯 IPv4 实例）没有 IPv6
+# 出口，客户端发来的 IPv6 目标连接必然 network unreachable——手机等客户端
+# 自带 IPv6、常把域名解析成 v6 地址直发过来，失败后未必回落 v4，体感就是
+# 「节点时好时坏」；而安装时的历次验证用的都是域名目标（解析走 v4），验不出。
+no_v6_egress() {
+  command -v ip >/dev/null 2>&1 || return 1
+  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then return 1; fi
+  if [[ -n "$(ip -6 route show default 2>/dev/null)" ]]; then return 1; fi
+  return 0
+}
+
+# write_config 追加的 JSON 尾段（顶层 dns + route）；两类自适应都没命中时输出
+# 空，产物与改前逐字节一致。两类可叠加、共用同一个 dns/route 对象：
+#  ① 受限网络（restricted_net_env）：dns 走普通 UDP 指向系统解析（type "local"
+#     在受限环境实测无效，必须普通 udp），route 关接口探测并写死默认网卡；
+#  ② 无 IPv6 出口（no_v6_egress）：默认解析策略 ipv4_only（域名不再解析出
+#     v6），并给 IPv6 目标加 reject 规则，让客户端立刻失败回落 v4、不干等。
+# $1 可选：调用方既有的 route 内字段（如 WARP 的 rules/final），非空时并入同
+# 一个 route 对象，避免顶层出现两个 "route" 键。$1 已带 rules 时不再叠加
+# reject 规则（v6 由调用方在自己的 rules 里处理）；$1 为 WARP 全局模式
+# （final: warp）时 v6 本可经 WARP 出去，整段 ② 不启用。
 restricted_net_tail() {
-  restricted_net_env || return 0
-  local _ns _dev _route="\"auto_detect_interface\": false"
-  _ns=$(restricted_net_nameserver)
-  _dev=$(restricted_net_dev)
-  if [[ -n "$_dev" ]]; then _route="$_route, \"default_interface\": \"$_dev\""; fi
-  if [[ -n "${1:-}" ]]; then _route="$_route, $1"; fi
-  printf ',\n  "dns": {"servers": [{"type": "udp", "server": "%s", "tag": "sys"}], "final": "sys"},\n  "route": {%s}' "$_ns" "$_route"
+  local _extra="${1:-}"
+  local _restricted=0 _nov6=0
+  if restricted_net_env; then _restricted=1; fi
+  if [[ "$_extra" != *'"final": "warp"'* ]] && no_v6_egress; then _nov6=1; fi
+  (( _restricted == 1 || _nov6 == 1 )) || return 0
+  local _route="" _dns=""
+  if (( _restricted == 1 )); then
+    local _ns _dev
+    _ns=$(restricted_net_nameserver)
+    _dev=$(restricted_net_dev)
+    _route="\"auto_detect_interface\": false"
+    if [[ -n "$_dev" ]]; then _route="$_route, \"default_interface\": \"$_dev\""; fi
+    _dns="\"dns\": {\"servers\": [{\"type\": \"udp\", \"server\": \"$_ns\", \"tag\": \"sys\"}], \"final\": \"sys\"}"
+    if (( _nov6 == 1 )); then
+      _route="$_route, \"default_domain_resolver\": {\"server\": \"sys\", \"strategy\": \"ipv4_only\"}"
+      if [[ "$_extra" != *'"rules"'* ]]; then
+        _route="$_route, \"rules\": [{\"ip_version\": 6, \"action\": \"reject\"}]"
+      fi
+    fi
+  else
+    _dns="\"dns\": {\"servers\": [{\"type\": \"local\", \"tag\": \"local\"}]}"
+    _route="\"default_domain_resolver\": {\"server\": \"local\", \"strategy\": \"ipv4_only\"}"
+    if [[ "$_extra" != *'"rules"'* ]]; then
+      _route="$_route, \"rules\": [{\"ip_version\": 6, \"action\": \"reject\"}]"
+    fi
+  fi
+  if [[ -n "$_extra" ]]; then _route="$_route, $_extra"; fi
+  if (( _restricted == 0 && _nov6 == 1 )) && [[ -z "$_extra" ]]; then
+    _route="$_route, \"final\": \"direct\""
+  fi
+  printf ',\n  %s,\n  "route": {%s}' "$_dns" "$_route"
 }
 
 write_config() {
@@ -1440,6 +1483,10 @@ write_config() {
   \"endpoints\": [$_ep]"
       if [[ "$WARP_MODE" == "all" ]]; then
         _warp_route="\"final\": \"warp\""
+      elif no_v6_egress; then
+        # 分流模式下 IPv6 目标原本落 final=direct；本机无 v6 出口时必然失败，
+        # 改为也走 WARP（隧道内有 v6 出口）。有 v6 出口的机器不进此分支。
+        _warp_route="\"rules\": [{\"ip_cidr\": [\"0.0.0.0/0\"], \"outbound\": \"warp\"}, {\"ip_version\": 6, \"outbound\": \"warp\"}], \"final\": \"direct\""
       else
         _warp_route="\"rules\": [{\"ip_cidr\": [\"0.0.0.0/0\"], \"outbound\": \"warp\"}], \"final\": \"direct\""
       fi

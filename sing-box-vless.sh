@@ -27,7 +27,7 @@ set -euo pipefail
 #----------------------------- 0. 参数与常量 ---------------------------------
 ACTION="${1:-install}"
 
-SCRIPT_VERSION="1.1.2"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.1.3"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 
 # version 动作只打印版本，不需要 root / 已安装，提前处理
 if [[ "$ACTION" == "version" ]]; then
@@ -483,8 +483,106 @@ load_or_gen_identity() {
 }
 
 #----------------------------- 6. 写 sing-box 配置 ----------------------------
+# 受限网络环境自适应（OpenVZ/venet 容器）：
+# 背景（2026-11-06 于 OpenVZ 免费机实测）：这类容器默认路由无网关、网卡是 venet，
+# sing-box 内置 DNS 要靠枚举网卡/路由选默认接口，而容器禁止枚举（日志原文
+# "list routes: address family not supported by protocol"），于是出站解析全灭、
+# 全部直连链一起死；同机的系统解析（/etc/resolv.conf）却一切正常。
+# 对策：三项指纹同时成立才判「受限」，write_config 给配置顶层加两段——
+# dns 走普通 UDP 指向系统解析（注意：sing-box 的 dns type "local" 仍走其自家
+# 拨号层、实测无效，必须普通 udp）；route 关闭接口自动探测并写死默认网卡。
+# 判假时不写这两段，生成的配置与改前逐字节一致（正常机器零影响）。
+# 检测宁可漏报不可误报：用到的命令缺失（systemd-detect-virt / ip）一律判假。
+
+# 默认路由的 dev 名（如 venet0 / eth0）；取不到输出空
+restricted_net_dev() {
+  command -v ip >/dev/null 2>&1 || return 0
+  ip route show default 2>/dev/null | head -n 1 \
+    | awk '{for (i=1;i<=NF;i++) if ($i=="dev") {print $(i+1); exit}}'
+}
+
+# 系统解析地址：/etc/resolv.conf 第一个 nameserver；读不到回退回环 stub 口
+restricted_net_nameserver() {
+  local _ns=""
+  if [[ -r /etc/resolv.conf ]]; then
+    _ns=$(awk '$1=="nameserver" {print $2; exit}' /etc/resolv.conf 2>/dev/null || true)
+  fi
+  [[ -n "$_ns" ]] || _ns="127.0.0.53"
+  printf '%s\n' "$_ns"
+}
+
+# 三项指纹同时成立才返回 0：①OpenVZ ②默认路由 dev 以 venet 开头 ③默认路由无网关
+restricted_net_env() {
+  # ① OpenVZ：systemd-detect-virt 最直接；它缺失或判不出时退查
+  #    /proc/user_beancounters——OpenVZ/Virtuozzo 容器有此文件、普通机器没有
+  local _ovz=0
+  if command -v systemd-detect-virt >/dev/null 2>&1 \
+     && [[ "$(systemd-detect-virt 2>/dev/null || true)" == "openvz" ]]; then
+    _ovz=1
+  fi
+  if [[ -e /proc/user_beancounters ]]; then _ovz=1; fi
+  (( _ovz == 1 )) || return 1
+  command -v ip >/dev/null 2>&1 || return 1
+  # ② 网卡：默认路由 dev 名以 venet 开头（venet0 等）
+  local _dev
+  _dev=$(restricted_net_dev)
+  [[ "$_dev" == venet* ]] || return 1
+  # ③ 无网关：受限环境的默认路由形如 "default dev venet0 scope link"（无 via 段）；
+  #    IPv6 默认路由同机同形，可作旁证，这里以 IPv4 行为准即可（venet 机器必有此行）
+  local _def
+  _def=$(ip route show default 2>/dev/null | head -n 1)
+  [[ -n "$_def" && "$_def" != *" via "* ]] || return 1
+  return 0
+}
+
+# 无 IPv6 出口检测：无全局 IPv6 地址、且无 IPv6 默认路由才判真。纯结构判断、
+# 不发包探测；命令缺失一律判假（宁可漏报不可误报，与受限检测同一口径）。
+# 背景（2026-11-19 实测）：这类机器（如部分云厂商的纯 IPv4 实例）没有 IPv6
+# 出口，客户端发来的 IPv6 目标连接必然 network unreachable——手机等客户端
+# 自带 IPv6、常把域名解析成 v6 地址直发过来，失败后未必回落 v4，体感就是
+# 「节点时好时坏」；而安装时的历次验证用的都是域名目标（解析走 v4），验不出。
+no_v6_egress() {
+  command -v ip >/dev/null 2>&1 || return 1
+  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then return 1; fi
+  if [[ -n "$(ip -6 route show default 2>/dev/null)" ]]; then return 1; fi
+  return 0
+}
+
+# write_config 追加的 JSON 尾段（顶层 dns + route）；两类自适应都没命中时输出
+# 空，产物与改前逐字节一致。两类可叠加、共用同一个 dns/route 对象：
+#  ① 受限网络（restricted_net_env）：dns 走普通 UDP 指向系统解析（type "local"
+#     在受限环境实测无效，必须普通 udp），route 关接口探测并写死默认网卡；
+#  ② 无 IPv6 出口（no_v6_egress）：默认解析策略 ipv4_only（域名不再解析出
+#     v6），并给 IPv6 目标加 reject 规则，让客户端立刻失败回落 v4、不干等。
+restricted_net_tail() {
+  local _restricted=0 _nov6=0
+  if restricted_net_env; then _restricted=1; fi
+  if no_v6_egress; then _nov6=1; fi
+  (( _restricted == 1 || _nov6 == 1 )) || return 0
+  local _route="" _dns=""
+  if (( _restricted == 1 )); then
+    local _ns _dev
+    _ns=$(restricted_net_nameserver)
+    _dev=$(restricted_net_dev)
+    _route="\"auto_detect_interface\": false"
+    if [[ -n "$_dev" ]]; then _route="$_route, \"default_interface\": \"$_dev\""; fi
+    _dns="\"dns\": {\"servers\": [{\"type\": \"udp\", \"server\": \"$_ns\", \"tag\": \"sys\"}], \"final\": \"sys\"}"
+    if (( _nov6 == 1 )); then
+      _route="$_route, \"default_domain_resolver\": {\"server\": \"sys\", \"strategy\": \"ipv4_only\"}, \"rules\": [{\"ip_version\": 6, \"action\": \"reject\"}]"
+    fi
+  else
+    _dns="\"dns\": {\"servers\": [{\"type\": \"local\", \"tag\": \"local\"}]}"
+    _route="\"default_domain_resolver\": {\"server\": \"local\", \"strategy\": \"ipv4_only\"}, \"rules\": [{\"ip_version\": 6, \"action\": \"reject\"}], \"final\": \"direct\""
+  fi
+  printf ',\n  %s,\n  "route": {%s}' "$_dns" "$_route"
+}
+
 write_config() {
   echo "[信息] 写入 sing-box 配置（仅 VLESS + Reality）…"
+  # 网络环境自适应尾段（受限网络 / 无 IPv6 出口，见上方 restricted_net_tail
+  # 注释）：都没命中时 _net_tail 为空，产物与改前逐字节一致
+  local _net_tail
+  _net_tail=$(restricted_net_tail)
   cat > "$SB_DIR/sb.json" <<EOF
 {
   "log": {"level": "info", "timestamp": true},
@@ -504,7 +602,7 @@ write_config() {
       }
     }
   ],
-  "outbounds": [{"type": "direct", "tag": "direct"}]
+  "outbounds": [{"type": "direct", "tag": "direct"}]${_net_tail}
 }
 EOF
   "$SB_DIR/sing-box" check -c "$SB_DIR/sb.json" >/dev/null 2>&1 \
