@@ -602,6 +602,8 @@ maybe_prompt_cf_token() {
   [[ -t 0 ]] || return 0
   [[ -z "${SBOX_YES:-}" ]] || return 0
   load_cf_token 2>/dev/null && return 0
+  echo "[信息] Token 只用在：建/删子域名解析记录、签证书时写/删 TXT 记录、把 SSL 模式设为「完全（严格）」"
+  echo "[信息] 需要 Zone 读取 + DNS 编辑（限单个域名即可）；Zone Settings 编辑可选，没有的话 SSL 模式需去面板手动改"
   local _tok=""
   read -rp "[信息] 粘贴 Cloudflare API Token 可自动套域名 + 真证书；直接回车跳过（走临时域名自签）： " _tok || true
   _tok=$(printf '%s' "$_tok" | tr -d '[:space:]')
