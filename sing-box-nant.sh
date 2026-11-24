@@ -442,12 +442,14 @@ cf_zone_for_domain() {
   return 1
 }
 
-# 把 $2 的 A 记录指向 $3 并开橙色云代理；输出 record_id
+# 把 $2 的 A 记录指向 $3；先灰云（proxied=false）——要先验解析确实指到
+# 本机，黄云留到装完由用户去面板开（同名旧记录带着黄云的，这里一并切回
+# 灰云）；输出 record_id
 cf_upsert_a_record() {
   local _zid="$1" _fqdn="$2" _ip="$3" _resp _rid _body
   _resp=$(cf_api GET "/zones/$_zid/dns_records?type=A&name=$_fqdn") || return 1
   _rid=$(printf '%s' "$_resp" | jq -r '.result[0].id // empty' 2>/dev/null || true)
-  _body=$(printf '{"type":"A","name":"%s","content":"%s","proxied":true,"ttl":1}' "$_fqdn" "$_ip")
+  _body=$(printf '{"type":"A","name":"%s","content":"%s","proxied":false,"ttl":1}' "$_fqdn" "$_ip")
   if [[ -n "$_rid" ]]; then
     cf_api PUT "/zones/$_zid/dns_records/$_rid" "$_body" >/dev/null || return 1
   else
@@ -457,13 +459,13 @@ cf_upsert_a_record() {
   printf '%s' "$_rid"
 }
 
-# 把 $2 的 AAAA 记录指向 $3（裸 IPv6，不带方括号）并开橙色云代理；输出 record_id
+# 把 $2 的 AAAA 记录指向 $3（裸 IPv6，不带方括号）；同样先灰云
 # 与 cf_upsert_a_record 对称，纯 IPv6 机器走这条路径
 cf_upsert_aaaa_record() {
   local _zid="$1" _fqdn="$2" _ip="$3" _resp _rid _body
   _resp=$(cf_api GET "/zones/$_zid/dns_records?type=AAAA&name=$_fqdn") || return 1
   _rid=$(printf '%s' "$_resp" | jq -r '.result[0].id // empty' 2>/dev/null || true)
-  _body=$(printf '{"type":"AAAA","name":"%s","content":"%s","proxied":true,"ttl":1}' "$_fqdn" "$_ip")
+  _body=$(printf '{"type":"AAAA","name":"%s","content":"%s","proxied":false,"ttl":1}' "$_fqdn" "$_ip")
   if [[ -n "$_rid" ]]; then
     cf_api PUT "/zones/$_zid/dns_records/$_rid" "$_body" >/dev/null || return 1
   else
@@ -473,8 +475,39 @@ cf_upsert_aaaa_record() {
   printf '%s' "$_rid"
 }
 
-# 给域名套上 Cloudflare：解析指向本机（橙色云）+ SSL 模式改完全（严格），
-# 并把 zone/record 记进 cf.env，供卸载时清理本脚本建的记录
+# 验解析：灰云下查 $1 的实际解析（走 Cloudflare 的 DoH），结果里要有本机
+# 地址 $3 才算过。DNS 生效有延迟：每 5 秒查一次、最长约 2 分钟再下结论。
+# 验不过就报错并退出安装（exit 1）——解析不对，后面证书和链接全是坏的。
+# 黄云必须全程关着：开了黄云解析到的是 Cloudflare 的地址，永远对不上。
+cf_verify_dns_or_exit() {
+  local _fqdn="$1" _rtype="$2" _want="$3"
+  local _tries="${DNS_VERIFY_TRIES:-24}" _sleep="${DNS_VERIFY_SLEEP:-5}"
+  local _i _resp _got _want_lc
+  _want_lc=$(printf '%s' "$_want" | tr 'A-F' 'a-f')
+  echo "[信息] 正在验证 $_fqdn 的解析（灰云下查实际解析，最长约 2 分钟）…"
+  for _i in $(seq 1 "$_tries"); do
+    _resp=$(curl -fsSL --max-time 10 "https://cloudflare-dns.com/dns-query?name=$_fqdn&type=$_rtype" \
+      -H 'accept: application/dns-json' 2>/dev/null || true)
+    _got=$(printf '%s' "$_resp" | jq -r '.Answer[]?.data // empty' 2>/dev/null || true)
+    if printf '%s\n' "$_got" | tr 'A-F' 'a-f' | grep -Fxq "$_want_lc"; then
+      echo "[信息] 解析验证通过：$_fqdn → $_want"
+      return 0
+    fi
+    (( _i < _tries )) && sleep "$_sleep"
+  done
+  echo "[错误] $_fqdn 未正确解析：等了约 2 分钟，解析到的地址里没有本机地址 $_want，安装先停下。"
+  echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
+  echo "其他可能原因："
+  echo " 1) 同名记录是以前建的、还带着黄云状态（脚本这次已设为灰云，面板里若又被改回去就会对不上）"
+  echo " 2) 解析还没生效（刚建的记录，个别情况要等更久）"
+  echo " 3) 本机 IP 不对（自动检测错了，或手填填错了）"
+  echo "处理好后重跑安装即可（已建的记录会复用，不会重复建）。"
+  exit 1
+}
+
+# 给域名套上 Cloudflare：解析先灰云指向本机 + 验解析 + SSL 模式改完全
+# （严格），并把 zone/record 记进 cf.env，供卸载时清理本脚本建的记录；
+# 黄云不由脚本开——装完在结尾备注里提示用户去面板手动开
 cf_setup_domain() {
   local _fqdn="$1" _z _zid _ip _bare _rtype _rid
   # 先取令牌（写 cf.env 的 Token 行要用；直接调本函数时也保证有值，
@@ -506,7 +539,9 @@ cf_setup_domain() {
   } > "$CF_ENV_FILE"
   chmod 600 "$CF_ENV_FILE"
   TLS_ACME_MODE="cf"
-  echo "[信息] 已套 Cloudflare：$_fqdn → $_bare（$_rtype，橙色云代理），SSL 模式=完全（严格）"
+  cf_verify_dns_or_exit "$_fqdn" "$_rtype" "$_bare"
+  CF_ORANGE_NOTE="备注：域名 $_fqdn 这条记录现在是灰云（仅解析）。装完了，你可以去 Cloudflare 面板把它的黄云（橙色云代理）打开，链接不用换。"
+  echo "[信息] 已套 Cloudflare：$_fqdn → $_bare（$_rtype，灰云），SSL 模式=完全（严格）；黄云装完照结尾备注去面板开"
 }
 
 # 删除本脚本在 Cloudflare 建的解析记录（卸载时调用；没有记录则静默跳过）
@@ -559,7 +594,7 @@ ensure_cf_auto_domain() {
     fi
     TLS_DOMAIN_AUTO=1
     TLS_ACME=1
-    echo "[信息] TLS 域名复用已有记录（Cloudflare）：$TLS_DOMAIN（真证书 + 橙色云代理）"
+    echo "[信息] TLS 域名复用已有记录（Cloudflare）：$TLS_DOMAIN（真证书，灰云解析先行）"
     return 0
   fi
   if [[ -n "${SBOX_CF_ZONE:-}" ]]; then
@@ -588,7 +623,7 @@ ensure_cf_auto_domain() {
   fi
   TLS_DOMAIN_AUTO=1
   TLS_ACME=1
-  echo "[信息] TLS 域名自动生成（Cloudflare）：$TLS_DOMAIN（真证书 + 橙色云代理）"
+  echo "[信息] TLS 域名自动生成（Cloudflare）：$TLS_DOMAIN（真证书，灰云解析先行）"
 }
 
 # 交互安装时问一句要不要给 CF Token，免去命令行那一长串环境变量：
@@ -1935,6 +1970,7 @@ main() {
       echo
       echo "[完成] sing-box-nant 已就绪：九条链接见上，管理菜单运行 sudo sbn"
       [[ -n "${WARP_NOTE:-}" ]] && echo "$WARP_NOTE"
+      [[ -n "${CF_ORANGE_NOTE:-}" ]] && echo "$CF_ORANGE_NOTE"
       ;;
     uninstall) do_uninstall ;;
     update-core) detect_arch; do_update_core ;;
