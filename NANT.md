@@ -48,7 +48,9 @@ VMess+WS、Trojan、TUIC v5、AnyTLS、VLESS+WS+TLS 域名链、Naive；
 
 CF 自动域名已全链实测（纯 IPv6 机器）：提供 Cloudflare API Token 后
 自动建子域名、开橙色云代理、经 DNS-01 签发 Let's Encrypt 真证书，
-客户端不需要允许不安全证书，真流量实测 204 通过。
+客户端不需要允许不安全证书，真流量实测 204 通过。Token 可以在交互
+安装时直接粘贴输入（账号下多个域名时编号选），不必再敲命令行
+环境变量；回车跳过则走临时域名自签。
 
 本版三个修复：
 

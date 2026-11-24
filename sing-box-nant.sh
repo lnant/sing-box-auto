@@ -591,6 +591,62 @@ ensure_cf_auto_domain() {
   echo "[信息] TLS 域名自动生成（Cloudflare）：$TLS_DOMAIN（真证书 + 橙色云代理）"
 }
 
+# 交互安装时问一句要不要给 CF Token，免去命令行那一长串环境变量：
+# 只在 install + stdin 是终端 + 没有非交互标记 + 还没有任何 Token 时问；
+# 非交互（管道 / SBOX_YES / 已有 Token）保持原行为分毫不变。
+# 给了 Token 就存好并拉账号域名列表：只有一个直接用、多个编号选
+# （已用 SBOX_CF_ZONE 指定的跳过选择）；Token 无效或接口失败只提示
+# 一句、回落临时域名继续装，绝不中断安装。
+maybe_prompt_cf_token() {
+  [[ "${ACTION:-}" == "install" ]] || return 0
+  [[ -t 0 ]] || return 0
+  [[ -z "${SBOX_YES:-}" ]] || return 0
+  load_cf_token 2>/dev/null && return 0
+  local _tok=""
+  read -rp "[信息] 粘贴 Cloudflare API Token 可自动套域名 + 真证书；直接回车跳过（走临时域名自签）： " _tok || true
+  _tok=$(printf '%s' "$_tok" | tr -d '[:space:]')
+  if [[ -z "$_tok" ]]; then
+    echo "[信息] 未提供 Token，TLS 域名走临时域名（自签直连）"
+    return 0
+  fi
+  SBOX_CF_TOKEN="$_tok"
+  if ! load_cf_token; then
+    echo "[警告] 这个 Token 格式不对，已忽略；TLS 域名走临时域名（自签直连）"
+    SBOX_CF_TOKEN=""
+    return 0
+  fi
+  save_cf_token
+  [[ -n "${SBOX_CF_ZONE:-}" ]] && return 0
+  local _resp _names _nz
+  _resp=$(cf_api GET "/zones?status=active&per_page=50" 2>/dev/null || true)
+  _names=$(printf '%s' "$_resp" | jq -r '.result[]?.name // empty' 2>/dev/null || true)
+  _nz=$(printf '%s' "$_names" | grep -c . || true)
+  if [[ -z "$_names" || "${_nz:-0}" -lt 1 ]]; then
+    echo "[警告] 用这个 Token 拉不到 Cloudflare 域名列表（令牌无效或接口失败），TLS 域名走临时域名（自签直连）"
+    return 0
+  fi
+  if [[ "$_nz" == "1" ]]; then
+    SBOX_CF_ZONE="$_names"
+    echo "[信息] 已选用 Cloudflare 域名：$SBOX_CF_ZONE"
+    return 0
+  fi
+  echo "[信息] Cloudflare 账号下有 ${_nz} 个域名："
+  local _i=0 _n
+  while IFS= read -r _n; do
+    _i=$((_i+1))
+    echo "  ${_i}) ${_n}"
+  done <<< "$_names"
+  local _pick=""
+  read -rp "请选择域名编号（回车默认 1）： " _pick || true
+  [[ -z "$_pick" ]] && _pick=1
+  if ! [[ "$_pick" =~ ^[0-9]+$ ]] || (( _pick < 1 || _pick > _nz )); then
+    echo "[警告] 编号不对，默认用第 1 个"
+    _pick=1
+  fi
+  SBOX_CF_ZONE=$(printf '%s\n' "$_names" | sed -n "${_pick}p")
+  echo "[信息] 已选用 Cloudflare 域名：$SBOX_CF_ZONE"
+}
+
 # TLS 域名兜底：已设置则保留；未设置时优先用 Cloudflare 自动子域名（需已有
 # Token），否则用公网 IP 生成 sslip.io 临时域名（解析直达本机、立即可用；
 # IPv4 点换横杠、IPv6 冒号换横杠，两种写法均可解析出对应记录），走自签直连。
@@ -600,6 +656,7 @@ ensure_tls_domain() {
     TLS_ACME="${TLS_ACME:-0}"
     return 0
   fi
+  maybe_prompt_cf_token
   if load_cf_token; then
     # 环境变量给的 Token 落盘一次（600 权限，只更新 Token 行），之后重跑
     # /卸载不用再给；cf.env 里已有的 Token 不动
