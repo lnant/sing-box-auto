@@ -13,8 +13,8 @@
 #
 # 用法：
 #   安装：curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-nant.sh | sudo bash
-#   菜单：sudo sbn
-#   卸载：sudo sbn 选 7，或 curl … | sudo bash -s -- uninstall
+#   菜单：sbn（快捷方式自动提权，不用敲 sudo）
+#   卸载：sbn 选 10，或 curl … | sudo bash -s -- uninstall
 #
 # 特性：
 #   - 全程零交互：UUID、密钥、密码、端口全部自动生成（端口 10000-60000 随机）
@@ -45,7 +45,6 @@ SB_DIR="${NANT_DIR:-/etc/s-box-nant}"
 UNIT="sing-box-nant"
 ENV_FILE="$SB_DIR/nant.env"
 LINKS_FILE="/root/singbox-nant-links.txt"
-CF_ENV_FILE="$SB_DIR/cf.env"     # 持久化：Cloudflare API Token 与本脚本建的解析记录（600 权限）
 WARP_ENV_FILE="$SB_DIR/warp.env" # 持久化：WARP 出站模式与 wgcf 一次性注册参数（菜单管理，600 权限）
 SNI_REALITY="apple.com"
 SNI_HY2="www.microsoft.com"
@@ -377,114 +376,30 @@ do_update_core() {
   echo "[完成] 核心已更新到 v${latest}（旧版备份在 $SB_DIR/sing-box.bak）"
 }
 
-#----------------------------- 5.5 Cloudflare 与 TLS 域名 --------------------
-# 仅在自动域名需要时用：Token 来源（优先级）环境变量 SBOX_CF_TOKEN >
-# $CF_ENV_FILE。没有 Token 时这些函数根本不会被调到（域名走 sslip.io 兜底）。
-load_cf_token() {
-  CF_API_TOKEN=""
-  if [[ -n "${SBOX_CF_TOKEN:-}" ]]; then
-    CF_API_TOKEN="$SBOX_CF_TOKEN"
-  elif [[ -f "$CF_ENV_FILE" ]]; then
-    CF_API_TOKEN=$(grep '^CF_API_TOKEN=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-    # 自愈：不管这份文件是哪个版本建的、权限是不是 600，读到就纠回 600
-    chmod 600 "$CF_ENV_FILE" 2>/dev/null || true
-  fi
-  # 字符集校验：Token 只应含字母/数字/下划线/连字符，含其他字符一律视为
-  # 无效并忽略（cf.env 只用 grep 解析、从不 source，这一步是双保险）
-  if [[ -n "$CF_API_TOKEN" && ! "$CF_API_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]]; then
-    echo "[警告] Cloudflare API Token 含非法字符，已忽略" >&2
-    CF_API_TOKEN=""
-  fi
-  [[ -n "$CF_API_TOKEN" ]]
+#----------------------------- 5.5 TLS 域名（自己的域名手动加记录 / 临时域名）----
+# 本脚本不要 Cloudflare 令牌、不进任何人的解析后台：想用自己的域名，
+# 记录由装机人自己去面板加，脚本只负责把要加的记录打出来、再验解析
+# 对不对。不要域名（或非交互安装）就用 sslip.io 临时域名 + 自签证书。
+
+# TLS_DOMAIN 是不是用户自己的域名（不是临时 sslip、不是兜底伪装名）
+is_user_domain() {
+  [[ -n "${TLS_DOMAIN:-}" ]] || return 1
+  [[ "$TLS_DOMAIN" != "$SNI_SELF" ]] || return 1
+  [[ "$TLS_DOMAIN" != *.sslip.io ]] || return 1
+  return 0
 }
 
-save_cf_token() {
-  # 只更新 Token 这一行，保留 cf.env 里已有的 zone/record/host 记录
-  # （旧版是整文件重写，放在重跑路径上会把记录 bookkeeping 抹掉）
-  local _tmp
-  _tmp=$(mktemp)
-  if [[ -f "$CF_ENV_FILE" ]]; then
-    grep -v '^CF_API_TOKEN=' "$CF_ENV_FILE" > "$_tmp" 2>/dev/null || true
-  else
-    : > "$_tmp"
-  fi
-  printf 'CF_API_TOKEN="%s"\n' "$CF_API_TOKEN" >> "$_tmp"
-  mv -f "$_tmp" "$CF_ENV_FILE"
-  chmod 600 "$CF_ENV_FILE"
-}
-
-# $1=方法 $2=路径 $3=JSON 体（可选）；成功输出响应体，失败返回非 0
-cf_api() {
-  local _m="$1" _p="$2" _b="${3:-}"
-  if [[ -n "$_b" ]]; then
-    curl -fsSL --max-time 25 -X "$_m" "https://api.cloudflare.com/client/v4$_p" \
-      -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" \
-      --data "$_b" 2>/dev/null
-  else
-    curl -fsSL --max-time 25 -X "$_m" "https://api.cloudflare.com/client/v4$_p" \
-      -H "Authorization: Bearer $CF_API_TOKEN" 2>/dev/null
-  fi
-}
-
-# 逐级剥掉最左标签，找到 $1 所属的已激活 zone；输出 "zone_id<TAB>zone_name"
-cf_zone_for_domain() {
-  local cand="$1" _resp _zid
-  while [[ "$cand" == *.* ]]; do
-    if _resp=$(cf_api GET "/zones?name=$cand&status=active"); then
-      _zid=$(printf '%s' "$_resp" | jq -r --arg n "$cand" '[.result[] | select(.name==$n) | .id][0] // empty' 2>/dev/null || true)
-      if [[ -n "$_zid" ]]; then
-        printf '%s\t%s\n' "$_zid" "$cand"
-        return 0
-      fi
-    fi
-    cand="${cand#*.}"
-  done
-  return 1
-}
-
-# 把 $2 的 A 记录指向 $3；先灰云（proxied=false）——要先验解析确实指到
-# 本机，黄云留到装完由用户去面板开（同名旧记录带着黄云的，这里一并切回
-# 灰云）；输出 record_id
-cf_upsert_a_record() {
-  local _zid="$1" _fqdn="$2" _ip="$3" _resp _rid _body
-  _resp=$(cf_api GET "/zones/$_zid/dns_records?type=A&name=$_fqdn") || return 1
-  _rid=$(printf '%s' "$_resp" | jq -r '.result[0].id // empty' 2>/dev/null || true)
-  _body=$(printf '{"type":"A","name":"%s","content":"%s","proxied":false,"ttl":1}' "$_fqdn" "$_ip")
-  if [[ -n "$_rid" ]]; then
-    cf_api PUT "/zones/$_zid/dns_records/$_rid" "$_body" >/dev/null || return 1
-  else
-    _resp=$(cf_api POST "/zones/$_zid/dns_records" "$_body") || return 1
-    _rid=$(printf '%s' "$_resp" | jq -r '.result.id // empty' 2>/dev/null || true)
-  fi
-  printf '%s' "$_rid"
-}
-
-# 把 $2 的 AAAA 记录指向 $3（裸 IPv6，不带方括号）；同样先灰云
-# 与 cf_upsert_a_record 对称，纯 IPv6 机器走这条路径
-cf_upsert_aaaa_record() {
-  local _zid="$1" _fqdn="$2" _ip="$3" _resp _rid _body
-  _resp=$(cf_api GET "/zones/$_zid/dns_records?type=AAAA&name=$_fqdn") || return 1
-  _rid=$(printf '%s' "$_resp" | jq -r '.result[0].id // empty' 2>/dev/null || true)
-  _body=$(printf '{"type":"AAAA","name":"%s","content":"%s","proxied":false,"ttl":1}' "$_fqdn" "$_ip")
-  if [[ -n "$_rid" ]]; then
-    cf_api PUT "/zones/$_zid/dns_records/$_rid" "$_body" >/dev/null || return 1
-  else
-    _resp=$(cf_api POST "/zones/$_zid/dns_records" "$_body") || return 1
-    _rid=$(printf '%s' "$_resp" | jq -r '.result.id // empty' 2>/dev/null || true)
-  fi
-  printf '%s' "$_rid"
-}
-
-# 验解析：灰云下查 $1 的实际解析（走 Cloudflare 的 DoH），结果里要有本机
-# 地址 $3 才算过。DNS 生效有延迟：每 5 秒查一次、最长约 2 分钟再下结论。
-# 验不过就报错并退出安装（exit 1）——解析不对，后面证书和链接全是坏的。
-# 黄云必须全程关着：开了黄云解析到的是 Cloudflare 的地址，永远对不上。
-cf_verify_dns_or_exit() {
+# 验解析：灰云下查 $1 的实际解析（走 Cloudflare 的公共 DoH 只读查询，
+# 不需要任何令牌），结果里要有本机地址 $3 才算过。DNS 生效有延迟：
+# 每 5 秒查一次、最长约 1 分钟再下结论。过/不过都只返回状态码，
+# 报错文案与出口选择由调用方（手动域名流程）处理。
+# 黄云必须关着：开了黄云解析到的是 Cloudflare 的地址，永远对不上。
+verify_domain_dns() {
   local _fqdn="$1" _rtype="$2" _want="$3"
-  local _tries="${DNS_VERIFY_TRIES:-24}" _sleep="${DNS_VERIFY_SLEEP:-5}"
+  local _tries="${DNS_VERIFY_TRIES:-12}" _sleep="${DNS_VERIFY_SLEEP:-5}"
   local _i _resp _got _want_lc
   _want_lc=$(printf '%s' "$_want" | tr 'A-F' 'a-f')
-  echo "[信息] 正在验证 $_fqdn 的解析（灰云下查实际解析，最长约 2 分钟）…"
+  echo "[信息] 正在验证 $_fqdn 的解析（最长约 1 分钟）…"
   for _i in $(seq 1 "$_tries"); do
     _resp=$(curl -fsSL --max-time 10 "https://cloudflare-dns.com/dns-query?name=$_fqdn&type=$_rtype" \
       -H 'accept: application/dns-json' 2>/dev/null || true)
@@ -495,202 +410,143 @@ cf_verify_dns_or_exit() {
     fi
     (( _i < _tries )) && sleep "$_sleep"
   done
-  echo "[错误] $_fqdn 未正确解析：等了约 2 分钟，解析到的地址里没有本机地址 $_want，安装先停下。"
-  echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
-  echo "其他可能原因："
-  echo " 1) 同名记录是以前建的、还带着黄云状态（脚本这次已设为灰云，面板里若又被改回去就会对不上）"
-  echo " 2) 解析还没生效（刚建的记录，个别情况要等更久）"
-  echo " 3) 本机 IP 不对（自动检测错了，或手填填错了）"
-  echo "处理好后重跑安装即可（已建的记录会复用，不会重复建）。"
-  exit 1
+  return 1
 }
 
-# 给域名套上 Cloudflare：解析先灰云指向本机 + 验解析 + SSL 模式改完全
-# （严格），并把 zone/record 记进 cf.env，供卸载时清理本脚本建的记录；
-# 黄云不由脚本开——装完在结尾备注里提示用户去面板手动开
-cf_setup_domain() {
-  local _fqdn="$1" _z _zid _ip _bare _rtype _rid
-  # 先取令牌（写 cf.env 的 Token 行要用；直接调本函数时也保证有值，
-  # 不依赖调用方事先 load 过——set -u 下空变量会直接炸掉）
-  load_cf_token || { echo "[错误] 没有可用的 Cloudflare API Token，无法设置解析"; return 1; }
-  # 闷头活先打招呼：下面几步调 CF 接口、约 40 秒不出字是正常的，别关终端
-  echo "[信息] 正在向 Cloudflare 建解析记录并设 SSL 模式（约 40 秒，期间没有输出是正常的，请别关终端）…"
-  _z=$(cf_zone_for_domain "$_fqdn") || { echo "[错误] 在 Cloudflare 找不到 $_fqdn 所属的已激活域名（确认域名已托管到该账号）"; return 1; }
-  _zid="${_z%%$'\t'*}"
+# 把要加的解析记录原样打出来（手动域名流程专用）：$1=子域名 $2=类型 $3=本机 IP
+print_record_block() {
+  echo
+  echo "请去你的域名解析面板加上这一条记录（已经加过就照这个核对一遍）："
+  echo "  类型：$2"
+  echo "  名称：$1"
+  echo "  内容：$3"
+  echo "  代理状态：灰云（仅 DNS）——不要开黄云！开了黄云解析到的是服务商的地址，验证过不了"
+  echo "  TTL：自动"
+}
+
+# 自己的域名流程（安装与菜单「改域名」共用）：一个输入提示、每轮
+# 20 秒窗口。第一轮直接回车或超时不输入 = 不用域名（返回 1，不算
+# 错误）；输入了域名就打印应加的记录、随即验解析（轮询约 1 分钟，
+# 给传播和去面板补加记录留时间），对上就定下来（TLS_DOMAIN=该域名、
+# 证书自签且 SAN 带它，返回 0）。判定不过、或重试轮里回车/超时没
+# 输入，记 1 次错误：提示必须带「未解析正确域名」与「不要开黄云」
+# 两句、重打应加的记录，再回到输入提示。满 3 次错误返回 1 并置
+# DOMAIN_GAVE_UP=1（调用方据此回落临时域名继续，不退出安装）。
+# 格式不对只警告重输、不计次。全程不要令牌，脚本不碰解析后台。
+# 返回 0=已定下用户域名；1=没定（放弃或三次用完）。无可用公网 IP
+# 时没法验解析，直接返回 1。
+prompt_user_domain() {
+  DOMAIN_GAVE_UP=0
+  local _ip _bare _rtype
   _ip="$(get_ip)"
-  _bare="${_ip#[}"; _bare="${_bare%]}"   # 归一化：裸地址（CF API 的 content 不接受方括号写法）
+  _bare="${_ip#[}"; _bare="${_ip%]}"   # 归一化：裸地址
+  [[ -n "$_bare" ]] || return 1
   if [[ "$_bare" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    _rid=$(cf_upsert_a_record "$_zid" "$_fqdn" "$_bare") || { echo "[错误] Cloudflare 解析记录写入失败"; return 1; }
     _rtype="A"
   elif [[ "$_bare" == *:* ]]; then
-    _rid=$(cf_upsert_aaaa_record "$_zid" "$_fqdn" "$_bare") || { echo "[错误] Cloudflare 解析记录写入失败"; return 1; }
     _rtype="AAAA"
   else
-    echo "[错误] 未取得公网 IP（v4/v6 均无），无法设置解析"; return 1
-  fi
-  cf_api PATCH "/zones/$_zid/settings/ssl" '{"value":"strict"}' >/dev/null 2>&1 \
-    || echo "[警告] SSL 模式自动设置失败，请在 Cloudflare 手动改为「完全（严格）」"
-  {
-    printf 'CF_API_TOKEN="%s"\n' "$CF_API_TOKEN"
-    printf 'CF_ZONE_ID="%s"\n' "$_zid"
-    printf 'CF_RECORD_ID="%s"\n' "$_rid"
-    printf 'CF_RECORD_TYPE="%s"\n' "$_rtype"
-    printf 'CF_HOST="%s"\n' "$_fqdn"
-  } > "$CF_ENV_FILE"
-  chmod 600 "$CF_ENV_FILE"
-  TLS_ACME_MODE="cf"
-  cf_verify_dns_or_exit "$_fqdn" "$_rtype" "$_bare"
-  CF_ORANGE_NOTE="备注：域名 $_fqdn 这条记录现在是灰云（仅解析）。装完了，你可以去 Cloudflare 面板把它的黄云（橙色云代理）打开，链接不用换。"
-  echo "[信息] 已套 Cloudflare：$_fqdn → $_bare（$_rtype，灰云），SSL 模式=完全（严格）；黄云装完照结尾备注去面板开"
-}
-
-# 删除本脚本在 Cloudflare 建的解析记录（卸载时调用；没有记录则静默跳过）
-cf_delete_managed_record() {
-  [[ -f "$CF_ENV_FILE" ]] || return 0
-  local _zid _rid
-  _zid=$(grep '^CF_ZONE_ID=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-  _rid=$(grep '^CF_RECORD_ID=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-  [[ -n "$_zid" && -n "$_rid" ]] || return 0
-  load_cf_token || return 0
-  # 删之前先回查：记录还在、且名字确实是本脚本记下的 CF_HOST 才删，
-  # 防止本地状态过期时误删别人的记录
-  local _host _rname _chk
-  _host=$(grep '^CF_HOST=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-  if [[ -n "$_host" ]]; then
-    _chk=$(cf_api GET "/zones/$_zid/dns_records/$_rid" 2>/dev/null || true)
-    _rname=$(printf '%s' "${_chk:-}" | jq -r '.result.name // empty' 2>/dev/null || true)
-    [[ "$_rname" == "$_host" ]] || return 0
-  fi
-  cf_api DELETE "/zones/$_zid/dns_records/$_rid" >/dev/null 2>&1 || true
-}
-
-# 有 CF Token 时的自动域名：在账号域名下开一个随机子域名套上 CF，
-# 配合 ACME 真证书使用——不暴露源站 IP，也不依赖任何第三方临时域名服务
-ensure_cf_auto_domain() {
-  local _resp _zid _zname _label _fqdn _r
-  # 重跑复用：cf.env 里已有本脚本建过的自动域名时直接复用它（只改指向、
-  # 不新建记录），免得装一半重跑一次就多一条删不到的孤儿记录
-  local _reuse="" _rz="" _rzid="" _rchk=""
-  _reuse=$(grep '^CF_HOST=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-  if [[ -n "$_reuse" ]]; then
-    _rz=$(cf_zone_for_domain "$_reuse" 2>/dev/null || true)
-    if [[ -n "$_rz" ]] && { [[ -z "${SBOX_CF_ZONE:-}" ]] || [[ "$_reuse" == *".$SBOX_CF_ZONE" ]]; }; then
-      # 回读确认记录本身还在：只剩 zone、记录已被删掉的不复用旧名，
-      # 落回下面新建标签的逻辑，免得把别人手动删掉的记录又建回来
-      _rzid="${_rz%%$'\t'*}"
-      _rchk=$(cf_api GET "/zones/$_rzid/dns_records?name=$_reuse" 2>/dev/null || true)
-      if ! printf '%s' "$_rchk" | jq -e --arg n "$_reuse" '[.result[]? | select(.name==$n)] | length > 0' >/dev/null 2>&1; then
-        _reuse=""
-      fi
-    else
-      _reuse=""
-    fi
-  fi
-  if [[ -n "$_reuse" ]]; then
-    TLS_DOMAIN="$_reuse"
-    if ! cf_setup_domain "$_reuse"; then
-      TLS_DOMAIN=""
-      return 1
-    fi
-    TLS_DOMAIN_AUTO=1
-    TLS_ACME=1
-    echo "[信息] TLS 域名复用已有记录（Cloudflare）：$TLS_DOMAIN（真证书，灰云解析先行）"
-    return 0
-  fi
-  if [[ -n "${SBOX_CF_ZONE:-}" ]]; then
-    _resp=$(cf_api GET "/zones?name=$SBOX_CF_ZONE&status=active") || return 1
-    _zid=$(printf '%s' "$_resp" | jq -r --arg n "$SBOX_CF_ZONE" '[.result[] | select(.name==$n) | .id][0] // empty' 2>/dev/null || true)
-    _zname=$(printf '%s' "$_resp" | jq -r --arg n "$SBOX_CF_ZONE" '[.result[] | select(.name==$n) | .name][0] // empty' 2>/dev/null || true)
-  else
-    _resp=$(cf_api GET "/zones?status=active&per_page=50") || return 1
-    _zid=$(printf '%s' "$_resp" | jq -r '.result[0].id // empty' 2>/dev/null || true)
-    _zname=$(printf '%s' "$_resp" | jq -r '.result[0].name // empty' 2>/dev/null || true)
-    # 账号里有多个域名时不许默默选错：明确播报建在哪个域名下，并给出指定办法
-    local _nz
-    _nz=$(printf '%s' "$_resp" | jq -r '.result | length' 2>/dev/null || echo 1)
-    if [[ "${_nz:-1}" -gt 1 && -n "$_zname" ]]; then
-      echo "[信息] Cloudflare 账号共有 ${_nz} 个域名，自动域名将建在 ${_zname} 下（指定其他域名：SBOX_CF_ZONE=域名）"
-    fi
-  fi
-  [[ -n "$_zid" && -n "$_zname" ]] || return 1
-  _r=$(head -c 3 /dev/urandom | od -An -tx1 | tr -d ' \n')
-  _label="sbox-${_r:-a1b2c3}"
-  _fqdn="$_label.$_zname"
-  TLS_DOMAIN="$_fqdn"
-  if ! cf_setup_domain "$_fqdn"; then
-    TLS_DOMAIN=""
     return 1
   fi
-  TLS_DOMAIN_AUTO=1
-  TLS_ACME=1
-  echo "[信息] TLS 域名自动生成（Cloudflare）：$TLS_DOMAIN（真证书，灰云解析先行）"
+  local _timeout="${DOMAIN_PROMPT_TIMEOUT:-20}"
+  local _errors=0 _attempted=0 _fqdn="" _ans="" _rc=0
+  echo "[信息] 域名链（VLESS+WS+TLS）默认用临时域名 + 自签证书；有自己的域名也可以用："
+  echo "       记录由你自己去域名面板加，脚本只负责打印要加的记录、再验解析，全程不要任何令牌。"
+  while true; do
+    _ans=""; _rc=0
+    if (( _attempted == 0 && _errors == 0 )); then
+      read -t "$_timeout" -rp "要用自己的域名就输入完整子域名（如 a.example.com）；直接回车或 ${_timeout} 秒不输入 = 不用域名： " _ans || _rc=$?
+    else
+      read -t "$_timeout" -rp "重新输入子域名再查（回车或 ${_timeout} 秒不输入也算一次，已错 ${_errors}/3 次）： " _ans || _rc=$?
+    fi
+    _ans=$(printf '%s' "$_ans" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+    if [[ -z "$_ans" ]]; then
+      if (( _attempted == 0 && _errors == 0 )); then
+        # 第一轮放弃：不用域名，不算错误
+        echo "[信息] 不用自己的域名"
+        return 1
+      fi
+      # 重试轮里没输入（回车或超时）：和判定不过一样记 1 次错误
+      _errors=$((_errors+1))
+      echo "[错误] 未解析正确域名：这一轮没有输入域名，也算一次（已错 ${_errors}/3 次）。"
+      echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
+      print_record_block "$_fqdn" "$_rtype" "$_bare"
+      if (( _errors >= 3 )); then
+        DOMAIN_GAVE_UP=1
+        return 1
+      fi
+      continue
+    fi
+    if ! [[ "$_ans" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+      echo "[警告] 域名格式不对（要完整子域名、至少带一个点），重输一次（不计次）"
+      continue
+    fi
+    _fqdn="$_ans"
+    _attempted=1
+    print_record_block "$_fqdn" "$_rtype" "$_bare"
+    echo "[信息] 现在开始验解析（约 1 分钟）：还没去面板加记录的，现在去加还来得及。"
+    if verify_domain_dns "$_fqdn" "$_rtype" "$_bare"; then
+      TLS_DOMAIN="$_fqdn"
+      TLS_DOMAIN_AUTO=0
+      DOMAIN_ORANGE_NOTE="备注：域名 $_fqdn 这条记录现在是灰云（仅解析）。装完了，你可以去面板把它的黄云（橙色云代理）打开；注意 SSL 模式选「完全」，不要选「完全（严格）」——源站是自签证书，严格模式会报错。链接不用换。"
+      echo "[信息] TLS 域名已定：$TLS_DOMAIN（自签证书，SAN 带该域名）"
+      return 0
+    fi
+    _errors=$((_errors+1))
+    echo "[错误] $_fqdn 未解析正确域名：解析到的地址里没有本机地址 $_bare（已错 ${_errors}/3 次）。"
+    echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
+    echo "其他可能原因：记录内容填错了（要填本机 IP $_bare）、或解析还没生效（刚加的记录）。"
+    print_record_block "$_fqdn" "$_rtype" "$_bare"
+    if (( _errors >= 3 )); then
+      DOMAIN_GAVE_UP=1
+      return 1
+    fi
+  done
 }
 
-# 交互安装时问一句要不要给 CF Token，免去命令行那一长串环境变量：
-# 只在 install + stdin 是终端 + 没有非交互标记 + 还没有任何 Token 时问；
-# 非交互（管道 / SBOX_YES / 已有 Token）保持原行为分毫不变。
-# 给了 Token 就存好并拉账号域名列表：只有一个直接用、多个编号选
-# （已用 SBOX_CF_ZONE 指定的跳过选择）；Token 无效或接口失败只提示
-# 一句、回落临时域名继续装，绝不中断安装。
-maybe_prompt_cf_token() {
+# 安装时的域名提问（薄封装）：只在 install + stdin 是终端 + 没有
+# 非交互标记时走 prompt_user_domain；定不下来（三轮放弃或三次错误）
+# 就回落临时域名继续装——三次错误用完时多说一句：先临时装、装完
+# 可在管理菜单里改域名。非交互保持原行为分毫不变。
+maybe_prompt_manual_domain() {
   [[ "${ACTION:-}" == "install" ]] || return 0
   [[ -t 0 ]] || return 0
   [[ -z "${SBOX_YES:-}" ]] || return 0
-  load_cf_token 2>/dev/null && return 0
-  echo "[信息] Token 只用在：建/删子域名解析记录、签证书时写/删 TXT 记录、把 SSL 模式设为「完全（严格）」"
-  echo "[信息] 需要 Zone 读取 + DNS 编辑（限单个域名即可）；Zone Settings 编辑可选，没有的话 SSL 模式需去面板手动改"
-  local _tok=""
-  read -rp "[信息] 粘贴 Cloudflare API Token 可自动套域名 + 真证书；直接回车跳过（走临时域名自签）： " _tok || true
-  _tok=$(printf '%s' "$_tok" | tr -d '[:space:]')
-  if [[ -z "$_tok" ]]; then
-    echo "[信息] 未提供 Token，TLS 域名走临时域名（自签直连）"
+  if prompt_user_domain; then
     return 0
   fi
-  SBOX_CF_TOKEN="$_tok"
-  if ! load_cf_token; then
-    echo "[警告] 这个 Token 格式不对，已忽略；TLS 域名走临时域名（自签直连）"
-    SBOX_CF_TOKEN=""
+  if [[ "${DOMAIN_GAVE_UP:-0}" == "1" ]]; then
+    echo "[信息] 域名先不定了：用临时域名继续安装；装完后想用自己的域名，运行 sbn 选「改域名」即可，不用重装。"
+  fi
+  return 0
+}
+
+# 菜单「改域名」：跑同一套自己的域名流程；定下来就换证书（SAN 要带
+# 新域名）、重写配置、重启服务、重出链接；没定下来保持当前域名不动
+do_change_domain() {
+  [[ -t 0 ]] || { echo "[错误] 改域名需要在终端里操作"; return 1; }
+  local _old="${TLS_DOMAIN:-}"
+  if ! prompt_user_domain; then
+    echo "[信息] 没改成：保持当前域名 ${_old:-（临时域名）} 不变"
     return 0
   fi
-  save_cf_token
-  [[ -n "${SBOX_CF_ZONE:-}" ]] && return 0
-  local _resp _names _nz
-  _resp=$(cf_api GET "/zones?status=active&per_page=50" 2>/dev/null || true)
-  _names=$(printf '%s' "$_resp" | jq -r '.result[]?.name // empty' 2>/dev/null || true)
-  _nz=$(printf '%s' "$_names" | grep -c . || true)
-  if [[ -z "$_names" || "${_nz:-0}" -lt 1 ]]; then
-    echo "[警告] 用这个 Token 拉不到 Cloudflare 域名列表（令牌无效或接口失败），TLS 域名走临时域名（自签直连）"
-    return 0
-  fi
-  if [[ "$_nz" == "1" ]]; then
-    SBOX_CF_ZONE="$_names"
-    echo "[信息] 已选用 Cloudflare 域名：$SBOX_CF_ZONE"
-    return 0
-  fi
-  echo "[信息] Cloudflare 账号下有 ${_nz} 个域名："
-  local _i=0 _n
-  while IFS= read -r _n; do
-    _i=$((_i+1))
-    echo "  ${_i}) ${_n}"
-  done <<< "$_names"
-  local _pick=""
-  read -rp "请选择域名编号（回车默认 1）： " _pick || true
-  [[ -z "$_pick" ]] && _pick=1
-  if ! [[ "$_pick" =~ ^[0-9]+$ ]] || (( _pick < 1 || _pick > _nz )); then
-    echo "[警告] 编号不对，默认用第 1 个"
-    _pick=1
-  fi
-  SBOX_CF_ZONE=$(printf '%s\n' "$_names" | sed -n "${_pick}p")
-  echo "[信息] 已选用 Cloudflare 域名：$SBOX_CF_ZONE"
+  save_env
+  # 证书 SAN 里是旧域名，删掉重签才带新域名
+  rm -f "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+  gen_certs
+  write_config
+  restart_service
+  print_links
+  [[ -n "${DOMAIN_ORANGE_NOTE:-}" ]] && echo "$DOMAIN_ORANGE_NOTE"
 }
 
 # 公网 IP 探测不到时让装机人手填（仅交互安装）：挂在 load_or_gen_identity
 # 里、ensure_tls_domain 之前——安装流程第一次需要公网 IP 的上游，只问这
-# 一次，后面的 CF 建记录、sslip 兜底、证书 SAN、链接生成都经 get_ip 读
-# 同一个值。填对了存进 nant.env 的 PUBLIC_IP，重跑不再问。填错或空填
-# 算一次，三次用完就明确提示并退出安装（exit 1）：地址不对硬装出来的
-# 记录和链接全是坏的，不如停下来问清。非交互（管道 / SBOX_YES / 已存
-# PUBLIC_IP / 探测得到）不问、行为分毫不变。
+# 一次，后面的 sslip 兜底、证书 SAN、链接生成都经 get_ip 读同一个值。
+# 填对了存进 nant.env 的 PUBLIC_IP，重跑不再问。每次输入限时 20 秒，
+# 超时和填错、空填一样算一次失败，三次用完就明确提示并退出安装
+# （exit 1）：地址不对硬装出来的链接全是坏的，不如停下来问清。
+# 非交互（管道 / SBOX_YES / 已存 PUBLIC_IP / 探测得到）不问、行为不变。
 maybe_prompt_public_ip() {
   [[ "${ACTION:-}" == "install" ]] || return 0
   [[ -t 0 ]] || return 0
@@ -698,16 +554,23 @@ maybe_prompt_public_ip() {
   [[ -z "${PUBLIC_IP:-}" ]] || return 0
   [[ -n "$(get_ip)" ]] && return 0
   echo "[信息] 未能自动检测到本机公网 IP（几个探测站都没给出结果）"
-  local _try=0 _in=""
+  local _timeout="${IP_PROMPT_TIMEOUT:-20}"
+  local _try=0 _in="" _rc=0
   while (( _try < 3 )); do
     _try=$((_try+1))
-    read -rp "请输入这台机器的公网 IP（IPv4 或 IPv6，第 ${_try}/3 次）： " _in || true
+    _in=""; _rc=0
+    read -t "$_timeout" -rp "请输入这台机器的公网 IP（IPv4 或 IPv6，${_timeout} 秒内输入，第 ${_try}/3 次）： " _in || _rc=$?
+    if (( _rc > 128 )); then
+      # read 超时返回码 >128；半截输入也不算数，和空填一样计一次
+      echo "[警告] ${_timeout} 秒内没输完（超时也算一次），还剩 $((3-_try)) 次机会"
+      continue
+    fi
     _in=$(printf '%s' "$_in" | tr -d '[:space:]')
     _in="${_in#[}"; _in="${_in%]}"
     if [[ "$_in" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
        || { [[ "$_in" == *:* ]] && [[ "$_in" =~ ^[0-9a-fA-F:]+$ ]]; }; then
       PUBLIC_IP="$_in"
-      echo "[信息] 已采用手动填写的公网 IP：$PUBLIC_IP（会存入配置，建记录与链接都用它，重跑不再问）"
+      echo "[信息] 已采用手动填写的公网 IP：$PUBLIC_IP（会存入配置，证书 SAN 与链接都用它，重跑不再问）"
       return 0
     fi
     echo "[警告] 这个 IP 格式不对（空填也算一次），还剩 $((3-_try)) 次机会"
@@ -716,28 +579,23 @@ maybe_prompt_public_ip() {
   exit 1
 }
 
-# TLS 域名兜底：已设置则保留；未设置时优先用 Cloudflare 自动子域名（需已有
-# Token），否则用公网 IP 生成 sslip.io 临时域名（解析直达本机、立即可用；
-# IPv4 点换横杠、IPv6 冒号换横杠，两种写法均可解析出对应记录），走自签直连。
+# TLS 域名决策：已有域名（含重跑时 env 里存着的自己的域名）直接沿用、
+# 不再走手动步；没有时交互安装先问一句要不要用自己的域名（手动流，
+# 见 maybe_prompt_manual_domain）；不要或非交互时用公网 IP 生成
+# sslip.io 临时域名（解析直达本机、立即可用；IPv4 点换横杠、IPv6
+# 冒号换横杠，两种写法均可解析出对应记录），走自签直连。
 ensure_tls_domain() {
   if [[ -n "${TLS_DOMAIN:-}" ]]; then
     TLS_DOMAIN_AUTO="${TLS_DOMAIN_AUTO:-0}"
-    TLS_ACME="${TLS_ACME:-0}"
     return 0
   fi
-  maybe_prompt_cf_token
-  if load_cf_token; then
-    # 环境变量给的 Token 落盘一次（600 权限，只更新 Token 行），之后重跑
-    # /卸载不用再给；cf.env 里已有的 Token 不动
-    if [[ -n "${SBOX_CF_TOKEN:-}" ]]; then save_cf_token; fi
-    if ensure_cf_auto_domain; then
-      return 0
-    fi
+  maybe_prompt_manual_domain
+  if [[ -n "${TLS_DOMAIN:-}" ]]; then
+    return 0
   fi
   local _ip _bare
   _ip="$(get_ip)"
-  _bare="${_ip#[}"; _bare="${_bare%]}"   # 归一化：裸地址
-  TLS_ACME=0
+  _bare="${_ip#[}"; _bare="${_ip%]}"   # 归一化：裸地址
   if [[ "$_bare" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     TLS_DOMAIN="${_bare//./-}.sslip.io"
     TLS_DOMAIN_AUTO=1
@@ -812,8 +670,6 @@ NAIVE_USER="$NAIVE_USER"
 NAIVE_PASS="$NAIVE_PASS"
 TLS_DOMAIN="${TLS_DOMAIN:-}"
 TLS_DOMAIN_AUTO="${TLS_DOMAIN_AUTO:-1}"
-TLS_ACME="${TLS_ACME:-0}"
-TLS_ACME_MODE="${TLS_ACME_MODE:-cf}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 EOF
   chmod 600 "$ENV_FILE"
@@ -974,28 +830,11 @@ EOF
 #----------------------------- 7. 写配置 --------------------------------------
 write_config() {
   echo "[信息] 写入 sing-box 配置（九个入站）…"
-  # 域名 TLS 入站的 tls 段两种形态：默认自签证书；有 Cloudflare 自动域名时走
-  # sing-box 内置 ACME（DNS-01 走 Cloudflare，自动续期，不占 80/443、不装额外软件）
+  # 域名 TLS 入站的 tls 段只有一种形态：本地自签证书（与七合一 VTLS
+  # 口径对齐）。不要令牌后 ACME（含 direct）已全删：真证书无从自动化，
+  # 客户端连域名链统一允许不安全证书，链接里带 allowInsecure
   local _tls_sni="${TLS_DOMAIN:-$SNI_SELF}" vtls_tls
-  local _self_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"certificate_path\": \"$SB_DIR/cert.pem\", \"key_path\": \"$SB_DIR/private.key\""
-  if [[ "${TLS_ACME:-0}" == "1" && "${TLS_ACME_MODE:-cf}" == "direct" ]]; then
-    # 直连真证书：域名已解析到本机时走 ACME 通用验证（HTTP-01 / TLS-ALPN-01）
-    vtls_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"certificate_provider\": {\"type\": \"acme\", \"domain\": [\"$_tls_sni\"], \"data_directory\": \"$SB_DIR/acme\", \"email\": \"admin@$_tls_sni\", \"provider\": \"letsencrypt\"}"
-  elif [[ "${TLS_ACME:-0}" == "1" ]]; then
-    local _tok=""
-    if [[ -f "$CF_ENV_FILE" ]]; then
-      _tok=$(grep '^CF_API_TOKEN=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-    fi
-    if [[ -n "$_tok" ]]; then
-      vtls_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"certificate_provider\": {\"type\": \"acme\", \"domain\": [\"$_tls_sni\"], \"data_directory\": \"$SB_DIR/acme\", \"email\": \"admin@$_tls_sni\", \"provider\": \"letsencrypt\", \"disable_http_challenge\": true, \"disable_tls_alpn_challenge\": true, \"dns01_challenge\": {\"provider\": \"cloudflare\", \"api_token\": \"$_tok\"}}"
-    else
-      # 状态不一致兜底（ACME 开着但 Token 丢失）：宁可降级自签，也不能生成坏配置
-      echo "[警告] ACME 已启用但读不到 Cloudflare Token，域名 TLS 链暂用自签证书"
-      vtls_tls="$_self_tls"
-    fi
-  else
-    vtls_tls="$_self_tls"
-  fi
+  vtls_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"certificate_path\": \"$SB_DIR/cert.pem\", \"key_path\": \"$SB_DIR/private.key\""
   # WARP 出站：状态在 warp.env（菜单 WARP 出站管理）；关闭或注册参数不全时
   # 不生成任何 WARP 配置（零成本），换端口/身份/域名等重写配置时原样保留
   load_warp_env
@@ -1135,7 +974,7 @@ write_config() {
   "outbounds": [{"type": "direct", "tag": "direct"}]${_warp_tail}
 }
 EOF
-  chmod 600 "$SB_DIR/sb.json"   # 内含 Reality 私钥与（ACME 模式下）CF Token，按密钥文件对待
+  chmod 600 "$SB_DIR/sb.json"   # 内含 Reality 私钥等凭据，按密钥文件对待
   "$SB_DIR/sing-box" check -c "$SB_DIR/sb.json" >/dev/null 2>&1 \
     || { echo "[错误] 配置校验失败"; exit 1; }
   echo "[信息] 配置校验通过"
@@ -1281,66 +1120,129 @@ restart_service() {
 }
 
 setup_shortcut() {
-  # sbn 快捷命令：先下到临时文件校验内容再替换，避免下坏文件覆盖可用版本
-  local tmp
-  tmp=$(mktemp)
-  if curl -fsSL --max-time 30 -o "$tmp" \
-      "https://raw.githubusercontent.com/${REPO}/main/sing-box-nant.sh" 2>/dev/null \
-     && head -n 1 "$tmp" | grep -q '^#!/bin/bash' && grep -q 'sing-box-nant' "$tmp"; then
-    install -m 755 "$tmp" /usr/local/bin/sbn
-    echo "[信息] 快捷命令已安装：sbn（root 下运行打开菜单）"
-  else
-    echo "[警告] 快捷命令下载失败，可稍后重跑安装或手动下载脚本使用"
-  fi
-  rm -f "$tmp"
-  # 若本次是本地文件运行，把脚本副本留在 SB_DIR 便于离线管理
-  if [[ -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "/usr/local/bin/sbn" ]]; then
+  # 主脚本副本留在 SB_DIR（离线管理、sbn 快捷方式、更新脚本都指它）：
+  # 本地文件运行时直接拷；管道运行时本地没有文件，从 GitHub 拉一份
+  # 校验后存。副本存不下来 sbn 就装不上，只警告不中断安装
+  if [[ -f "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "$SB_DIR/sing-box-nant.sh" ]]; then
     cp -f "${BASH_SOURCE[0]}" "$SB_DIR/sing-box-nant.sh" 2>/dev/null || true
     chmod 755 "$SB_DIR/sing-box-nant.sh" 2>/dev/null || true
   fi
+  if [[ ! -f "$SB_DIR/sing-box-nant.sh" ]]; then
+    local tmp
+    tmp=$(mktemp)
+    if curl -fsSL --max-time 30 -o "$tmp" \
+        "https://raw.githubusercontent.com/${REPO}/main/sing-box-nant.sh" 2>/dev/null \
+       && head -n 1 "$tmp" | grep -q '^#!/bin/bash' && grep -q 'sing-box-nant' "$tmp"; then
+      install -m 755 "$tmp" "$SB_DIR/sing-box-nant.sh"
+    fi
+    rm -f "$tmp"
+  fi
+  if [[ ! -f "$SB_DIR/sing-box-nant.sh" ]]; then
+    echo "[警告] 主脚本副本没存下来，sbn 快捷命令这次装不上（可稍后重跑安装）"
+    return 0
+  fi
+  write_sbn_wrapper
+  echo "[信息] 快捷命令已安装：sbn（直接敲 sbn 打开管理菜单，自动提权）"
 }
 
-#----------------------------- 9.5 ACME 签发验证 ------------------------------
-# ACME 首次签发要等 DNS-01 验证，最长约 2 分钟；验证域名链真的能握手，
-# 不通过就自动回退自签证书（照七合一），绝不留一条握不上手的链接报喜
-acme_verify_or_fallback() {
-  [[ "${TLS_ACME:-0}" == "1" ]] || return 0
-  echo "[信息] 等待 Let's Encrypt 签发证书（DNS-01 验证，最长约 2 分钟）…"
-  local _ok=0 _i _code
-  for _i in $(seq 1 40); do
-    sleep 3
-    # 注意：WS 握手成功（101）后连接保持开启，curl 会以超时退出（28）——
-    # 不能把 curl 放进受 pipefail 影响的管道里判断，必须先捕获状态码再比较
-    _code=$(curl -s --max-time 5 --resolve "${TLS_DOMAIN}:${PORT_VTLS}:127.0.0.1" \
+# sbn 快捷方式只是一个小包装：本体在 SB_DIR，非 root 运行时它自己
+# sudo 提权，用户只敲 sbn 就行，不用敲 sudo
+write_sbn_wrapper() {
+  cat > /usr/local/bin/sbn <<EOF
+#!/bin/bash
+# sing-box-nant 管理快捷方式（本体：$SB_DIR/sing-box-nant.sh；非 root 自动 sudo 提权）
+TARGET="$SB_DIR/sing-box-nant.sh"
+[[ -f "\$TARGET" ]] || { echo "[错误] 找不到 \$TARGET（可能已被卸载）"; exit 1; }
+SUDO=""
+if [[ \$EUID -ne 0 ]]; then
+  command -v sudo >/dev/null 2>&1 || { echo "[错误] 需要 root：请先装 sudo 或改用 root 运行"; exit 1; }
+  SUDO="sudo"
+fi
+if [[ \$# -eq 0 ]]; then
+  exec \$SUDO "\$TARGET" menu
+fi
+exec \$SUDO "\$TARGET" "\$@"
+EOF
+  chmod 755 /usr/local/bin/sbn
+}
+
+# 拉最新版脚本到 $1：优先跟随最新 Release（按 nant-v 前缀取版，不串
+# 到别的版本），取不到 tag 再回退 main；每个源都校验内容 + bash -n
+# 通过才算数（与七合一 fetch_latest_script 同一模式）
+fetch_latest_script() {
+  local dest="$1"
+  local ts url tag=""
+  ts=$(date +%s)
+  tag=$(curl -fsSL --max-time 15 "https://api.github.com/repos/${REPO}/releases?per_page=30" 2>/dev/null \
+    | jq -r '.[].tag_name' 2>/dev/null | grep -m1 '^nant-v' || true)
+  local urls=()
+  if [[ -n "$tag" ]]; then
+    urls+=(
+      "https://raw.githubusercontent.com/${REPO}/${tag}/sing-box-nant.sh?t=${ts}"
+      "https://cdn.jsdelivr.net/gh/${REPO}@${tag}/sing-box-nant.sh"
+    )
+  fi
+  urls+=(
+    "https://raw.githubusercontent.com/${REPO}/main/sing-box-nant.sh?t=${ts}"
+    "https://cdn.jsdelivr.net/gh/${REPO}@main/sing-box-nant.sh"
+  )
+  for url in "${urls[@]}"; do
+    if curl -fsSL --max-time 60 --retry 2 "$url" -o "$dest" \
+       && grep -q "sing-box-nant 一键安装脚本" "$dest" \
+       && bash -n "$dest" 2>/dev/null; then
+      return 0
+    fi
+    echo "[警告] 从 ${url%%\?*} 获取失败，尝试备用源…"
+  done
+  return 1
+}
+
+# 更新脚本到最新版：替换 SB_DIR 里的主脚本副本并刷新 sbn 包装；
+# 成功返回 0，菜单里接着 exec 新版进菜单
+do_update_script() {
+  echo "[信息] 正在从 GitHub 拉取最新脚本…"
+  local tmpfile
+  tmpfile=$(mktemp)
+  if fetch_latest_script "$tmpfile"; then
+    local newver=""
+    newver=$(grep -m1 '^SCRIPT_VERSION=' "$tmpfile" | cut -d'"' -f2 || true)
+    install -m 755 "$tmpfile" "$SB_DIR/sing-box-nant.sh"
+    rm -f "$tmpfile"
+    write_sbn_wrapper
+    if [[ -n "$newver" ]]; then
+      echo "[完成] 脚本已更新到 v$newver"
+    else
+      echo "[完成] 脚本已更新到最新版"
+    fi
+    return 0
+  fi
+  rm -f "$tmpfile"
+  echo "[错误] 下载失败，请检查网络后重试"
+  return 1
+}
+
+#----------------------------- 9.5 域名链本地握手自检 ------------------------------
+# 证书统一自签、本地生成，没有 ACME 等待步；装完只在本机经 127.0.0.1
+# 对域名链做一次 WS 握手（-k 跳过自签校验），确认服务真的在目标端口
+# 按预期应答。过不了只警告、不回滚——配置和链接照常落地，修好后
+# sbn 里重看链接即可。
+vtls_local_check() {
+  [[ -n "${TLS_DOMAIN:-}" && -n "${PORT_VTLS:-}" && -n "${UUID:-}" ]] || return 0
+  local _i _code
+  for _i in $(seq 1 10); do
+    # WS 握手成功（101）后连接保持开启，curl 会以超时退出（28）——先捕获状态码再比较
+    _code=$(curl -sk --max-time 5 --resolve "${TLS_DOMAIN}:${PORT_VTLS}:127.0.0.1" \
       "https://${TLS_DOMAIN}:${PORT_VTLS}/${UUID}-vt" \
       -H "Connection: Upgrade" -H "Upgrade: websocket" \
       -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==" \
       -o /dev/null -w '%{http_code}' 2>/dev/null || true)
     if [[ "$_code" == "101" ]]; then
-      _ok=1
-      break
+      echo "[信息] 域名链本地握手自检通过（${TLS_DOMAIN}:${PORT_VTLS}）"
+      return 0
     fi
+    sleep 2
   done
-  if [[ "$_ok" == "1" ]]; then
-    echo "[完成] 真证书已签发，域名 TLS 链已通过 WebSocket 握手验证"
-    return 0
-  fi
-  echo "[警告] 证书签发或握手验证未通过（sing-box 日志见服务日志），自动回退自签证书"
-  TLS_ACME=0
-  save_env
-  # 回退自签后 Cloudflare 若仍是「完全（严格）」会因源站证书不受信报 526，同步降为「完全」
-  if [[ "${TLS_ACME_MODE:-cf}" != "direct" && -f "$CF_ENV_FILE" ]] && load_cf_token; then
-    local _zid_fb
-    _zid_fb=$(grep '^CF_ZONE_ID=' "$CF_ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
-    if [[ -n "$_zid_fb" ]]; then
-      cf_api PATCH "/zones/$_zid_fb/settings/ssl" '{"value":"full"}' >/dev/null 2>&1 || true
-      echo "[信息] 已同步把 Cloudflare SSL 模式降为「完全」，与自签证书匹配"
-    fi
-  fi
-  rm -f "$SB_DIR/cert.pem" "$SB_DIR/private.key"
-  gen_certs
-  write_config
-  setup_service
+  echo "[警告] 域名链本地握手自检未通过（服务日志：journalctl -u $UNIT），链接先照常保存，修好后运行 sbn 看链接"
 }
 
 #----------------------------- 9.6 WARP 出站 ----------------------------------
@@ -1748,7 +1650,7 @@ done
 
 #----------------------------- 10. 链接 ---------------------------------------
 get_ip() {
-  # 配置里存过手填的公网 IP（nant.env 的 PUBLIC_IP）时优先用它：建记录、
+  # 配置里存过手填的公网 IP（nant.env 的 PUBLIC_IP）时优先用它：验解析、
   # 证书 SAN、链接生成都认这一个，不再重复探测/询问（格式与探测结果
   # 一致：IPv4 裸写、IPv6 带方括号）
   if [[ -n "${PUBLIC_IP:-}" ]]; then
@@ -1793,15 +1695,9 @@ print_links() {
   ss_link="ss://${ss_user}@${ip}:${PORT_SS}#nant-ss-${host}"
   tj_link="trojan://${TROJAN_PASS}@${ip}:${PORT_TROJAN}?security=tls&sni=${SNI_SELF}&allowInsecure=1&insecure=1#nant-trojan-${host}"
   nv_link="naive+https://${NAIVE_USER}:${NAIVE_PASS}@${ip}:${PORT_NAIVE}?sni=${SNI_SELF}&insecure=1&allowInsecure=1#nant-naive-${host}"
-  # 域名链：地址默认用域名本身；域名是本脚本套的 CF（cf.env 记有 CF_HOST）时
-  # 改用 CF 通用保底地址 cloudflare-ech.com 作入口（sni/host 仍是本域名、CF 按
-  # SNI 回源），源站 IP+端口在客户端到源站这段路上被干扰时经 CF 绕开（照七合一）
+  # 域名链：地址就用域名本身（用户自己的域名或临时域名都直连源站；
+  # 用户装完去面板开了黄云后，同一条链接经 CF 回源照样能用，不用换）
   local _vt_host="${TLS_DOMAIN:-$SNI_SELF}" _vt_addr="${TLS_DOMAIN:-$ip}" _vt_ins="&allowInsecure=1"
-  [[ "${TLS_ACME:-0}" == "1" ]] && _vt_ins=""
-  if [[ -n "${TLS_DOMAIN:-}" && "${TLS_ACME_MODE:-cf}" != "direct" && -f "$CF_ENV_FILE" ]] \
-     && grep -q "^CF_HOST=\"${TLS_DOMAIN}\"" "$CF_ENV_FILE" 2>/dev/null; then
-    _vt_addr="cloudflare-ech.com"
-  fi
   vt_link="vless://${UUID}@${_vt_addr}:${PORT_VTLS:-443}?encryption=none&security=tls&sni=${_vt_host}&fp=chrome&type=ws&host=${_vt_host}&path=${UUID}-vt${_vt_ins}#nant-vtls-${host}"
   {
     echo "================ sing-box-nant 节点链接 ================"
@@ -1837,8 +1733,8 @@ print_links() {
     echo "$nv_link"
     echo
     echo "VLESS + WS + TLS（域名：${TLS_DOMAIN:-未设置}，TCP/${PORT_VTLS:-443}）"
-    if [[ "${TLS_ACME:-0}" == "1" ]]; then
-      echo "（真证书 + Cloudflare 代理）"
+    if is_user_domain; then
+      echo "（自己的域名 + 自签证书）"
     elif [[ "${TLS_DOMAIN_AUTO:-1}" == "1" ]]; then
       echo "（临时域名 + 自签证书，自签直连）"
     else
@@ -1847,7 +1743,7 @@ print_links() {
     echo "$vt_link"
     echo
     echo "======================================================="
-    echo "提示：链接已保存到 $LINKS_FILE；管理菜单：sudo sbn"
+    echo "提示：链接已保存到 $LINKS_FILE；管理菜单：sbn"
   } | tee "$LINKS_FILE"
   chmod 600 "$LINKS_FILE"
 }
@@ -1855,7 +1751,13 @@ print_links() {
 #----------------------------- 11. 卸载 ---------------------------------------
 do_uninstall() {
   echo "[信息] 卸载 sing-box-nant…"
-  cf_delete_managed_record   # 若脚本在 Cloudflare 建过解析记录（自动域名），一并删掉不留残留
+  # 解析记录是装机人自己在面板加的，脚本不碰；只提醒一句去向
+  if [[ -f "$ENV_FILE" ]]; then
+    TLS_DOMAIN=$(grep '^TLS_DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d'"' -f2 || true)
+    if is_user_domain; then
+      echo "[信息] 提醒：你在面板里给 ${TLS_DOMAIN} 加的那条解析记录是自己的，脚本没有动它；不用了请去面板自行删除。"
+    fi
+  fi
   systemctl stop "$UNIT" >/dev/null 2>&1 || true
   systemctl disable "$UNIT" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/${UNIT}.service"
@@ -1892,19 +1794,30 @@ do_menu() {
     echo "======== sing-box-nant v${SCRIPT_VERSION} ========"
     echo " 状态：$st ｜ 核心：v$(cat "$SB_DIR/core.version" 2>/dev/null || echo 未知) ｜ WARP：$(warp_mode_desc)"
     echo " 1) 查看链接"
-    echo " 2) 重启服务"
-    echo " 3) 更换端口（全部端口重新随机）"
-    echo " 4) 重置身份（UUID/密钥/密码全换，旧链接失效）"
-    echo " 5) WARP 出站（开关/模式）"
-    echo " 6) 更新核心"
-    echo " 7) 卸载"
+    echo " 2) 改域名（自己的域名，手动加记录）"
+    echo " 3) 重启服务"
+    echo " 4) WARP 出站（开关/模式）"
+    echo " 5) 更换端口（全部端口重新随机）"
+    echo " 6) 重置身份（UUID/密钥/密码全换，旧链接失效）"
+    echo " 7) 更新自签证书"
+    echo " 8) 更新核心"
+    echo " 9) 更新脚本"
+    echo " 10) 卸载"
     echo " 0) 退出（回车/20 秒无输入默认退出）"
     local c
-    c=$(read_choice "请选择 [0-7]：")
+    c=$(read_choice "请选择 [0-10]：")
     case "$c" in
       1) print_links ;;
-      2) restart_service ;;
-      3)
+      2)
+        . "$ENV_FILE"
+        do_change_domain
+        ;;
+      3) restart_service ;;
+      4)
+        . "$ENV_FILE"
+        do_warp_menu
+        ;;
+      5)
         . "$ENV_FILE"
         local used=" "
         PORT_REALITY=$(rand_port "$used"); used+=" $PORT_REALITY "
@@ -1918,7 +1831,7 @@ do_menu() {
         PORT_VTLS=$(pick_vtls_port "$used")
         save_env; write_config; open_firewall; restart_service; print_links
         ;;
-      4)
+      6)
         local y
         y=$(read_choice "确认重置身份？旧链接将全部失效 [y/N]：")
         if [[ "$y" == "y" || "$y" == "Y" ]]; then
@@ -1928,12 +1841,15 @@ do_menu() {
           echo "已取消"
         fi
         ;;
-      5)
-        . "$ENV_FILE"
-        do_warp_menu
-        ;;
-      6) detect_arch; do_update_core ;;
       7)
+        . "$ENV_FILE"
+        rm -f "$SB_DIR/cert.pem" "$SB_DIR/private.key" "$SB_DIR/hy2-cert.pem" "$SB_DIR/hy2-key.pem"
+        gen_hy2_cert; gen_certs; write_config; restart_service
+        echo "[完成] 自签证书已更新（域名与链接不变）"
+        ;;
+      8) detect_arch; do_update_core ;;
+      9) if do_update_script; then exec "$SB_DIR/sing-box-nant.sh" menu; fi ;;
+      10)
         local y2
         y2=$(read_choice "确认卸载 sing-box-nant？[y/N]：")
         if [[ "$y2" == "y" || "$y2" == "Y" ]]; then do_uninstall; exit 0; else echo "已取消"; fi
@@ -1964,20 +1880,26 @@ main() {
       open_firewall
       fix_selinux
       setup_service
-      acme_verify_or_fallback
+      vtls_local_check
       setup_shortcut
       print_links
       echo
-      echo "[完成] sing-box-nant 已就绪：九条链接见上，管理菜单运行 sudo sbn"
+      echo "[完成] sing-box-nant 已就绪：九条链接见上"
+      echo "管理菜单命令：sbn"
       [[ -n "${WARP_NOTE:-}" ]] && echo "$WARP_NOTE"
-      [[ -n "${CF_ORANGE_NOTE:-}" ]] && echo "$CF_ORANGE_NOTE"
+      [[ -n "${DOMAIN_ORANGE_NOTE:-}" ]] && echo "$DOMAIN_ORANGE_NOTE"
+      if ! is_user_domain; then
+        echo "备注：想用自己的域名，运行 sbn 选「改域名」即可，不用重装。"
+      fi
+      echo "备注：若链接连不上，先去云厂商控制台确认安全组已放行这九个端口——脚本只能开本机防火墙，管不了云厂商的安全组。"
       ;;
     uninstall) do_uninstall ;;
     update-core) detect_arch; do_update_core ;;
+    update-script) do_update_script ;;
     links) print_links ;;
     restart) restart_service ;;
     menu) do_menu ;;
-    *) echo "用法：$0 [install|uninstall|update-core|links|restart|menu|version]"; exit 1 ;;
+    *) echo "用法：$0 [install|uninstall|update-core|update-script|links|restart|menu|version]"; exit 1 ;;
   esac
 }
 
