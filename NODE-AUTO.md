@@ -12,7 +12,6 @@
   （只依赖 ws 一个包）、几个静态页面与 `poems/` 目录（站点页面内容）、
   `Dockerfile`（面板主机构建时用）。后文各节说的「程序文件」指的就是这一套；
   配置与证书不在仓里，按各节说明在目标环境现生成或自备。
-  本教程只讲环境类别与流程，不点名任何具体的平台或服务器。
 - 程序本体是一个跑在 Node.js 运行时上的单文件服务，不带任何代理类二进制；
   机器上有没有预装运行时不重要，可以由脚本自带，也可以手动准备。
 - 一套安装由这几样东西构成：运行时、程序文件、依赖包、一份配置
@@ -29,7 +28,7 @@
 
 ## 〇、普通服务器：一键装之前先看这几条
 
-普通服务器上用一键脚本时，有五件事先说清（装的人对自己的机器与网络有数，这里只点到为止）：
+普通服务器上用一键脚本时，有五件事先说清：
 
 - **选口**：端口不指定时，脚本先从 CDN 的代理名单口里挑——加密侧是
   443、8443、2053、2083、2087、2096，明文侧是 8080、2052、2082、2086、2095；
@@ -137,7 +136,7 @@
 ├── guard.sh              守护：30 秒巡检（步骤 9 给全文）
 ├── stop.sh               停止：停守护与实例，不删文件
 ├── run/                  tls.pid / plain.pid / guard.pid
-└── logs/                 tls.log / plain.log / guard.log（只记拉起事件）
+└── logs/                 tls.log / plain.log / guard.log（拉起事件）/ guard.out（守护自身输出）
 ```
 
 ### 关键步骤顺序（怎么用）
@@ -153,9 +152,17 @@
    ```
 
 3. **放程序文件**：把 yunting 仓的文件放进 `~/yunting/app/`——
-   能直连仓库时在 `~/yunting/app/` 里执行
+   能直连仓库且有 git 时，在 `~/yunting/app/` 里执行
    `git clone https://github.com/lnant/yunting .`（末尾的点表示克隆进当前目录）；
-   不能直连时在自己电脑上下载仓库压缩包、解开后把文件上传到这个目录。
+   没有 git 时，在机器上直接下载仓库压缩包解开（`--strip-components 1`
+   是剥掉包里顶层目录，正好落进 app/）：
+
+   ```sh
+   curl -fsSL https://github.com/lnant/yunting/archive/refs/heads/main.tar.gz | tar -xz -C ~/yunting/app --strip-components 1
+   # 没有 curl 时：wget -qO- https://github.com/lnant/yunting/archive/refs/heads/main.tar.gz | tar -xz -C ~/yunting/app --strip-components 1
+   ```
+
+   连仓库也直连不了时，在自己电脑上下载仓库压缩包、解开后把文件上传到这个目录。
    放完核对：`app.js`、`package.json`、四个 html、`poems/` 子目录都在，
    少哪个页面哪个路径就打不开。
 
@@ -188,7 +195,15 @@
    核心是把 ws 锁在 8.18.3：
 
    ```json
-   {"name":"yunting","private":true,"version":"1.0.0","dependencies":{"ws":"8.18.3"}}
+   {
+     "name": "yunting",
+     "version": "1.0.0",
+     "private": true,
+     "description": "云汀 · 诗词小读",
+     "dependencies": {
+       "ws": "8.18.3"
+     }
+   }
    ```
 
    ```sh
@@ -217,10 +232,18 @@
    CERT_DOMAIN=<对外域名或地址>  # 证书签给谁，一般与 DOMAIN 相同；与 DOMAIN 不一致时要重签证书
    KEEPALIVE=guard          # 无 systemd 的环境固定写 guard
    PUBLIC_IP=               # 仅「公网 IP 不落在网卡上」的机器手填，没有就留空
+   PLAIN_LINK_HOST=         # 以下四项一般留空；只有给明文实例单独换链接形态时才填（第二节步骤 5）
+   PLAIN_LINK_PORT=
+   PLAIN_LINK_SECURITY=
+   PLAIN_LINK_SNI=
    ```
 
    写完收紧权限：`chmod 600 ~/yunting/config.env`。
    这份文件就是日后重装、迁移、恢复的依据，另在机器外留一份副本。
+   说明：start.sh 实际读取的是 UUID、DOMAIN、TLS_PORT、PLAIN_PORT 与
+   PLAIN_LINK_* 这几项；CERT_DOMAIN 只是给日后重签证书时对照的记录
+   （证书实际签给谁，以步骤 8 生成证书时填的为准），KEEPALIVE 与
+   PUBLIC_IP 是备忘字段，改它们不会改变这几个脚本的行为。
 
 8. **生成自签证书**（仅起加密实例时需要，二选一）：
 
@@ -285,6 +308,7 @@
    DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
    [ -f "$DIR/config.env" ] || exit 0
    UUID=''; DOMAIN=''; TLS_PORT=''; PLAIN_PORT=''
+   PLAIN_LINK_HOST=''; PLAIN_LINK_PORT=''; PLAIN_LINK_SECURITY=''; PLAIN_LINK_SNI=''
    . "$DIR/config.env"
    NODE="$DIR/node/bin/node"
    [ -x "$NODE" ] || NODE=$(command -v node)
@@ -313,7 +337,8 @@
          "$NODE" app.js >> "$DIR/logs/$1.log" 2>&1 </dev/null &
      else
        $LAUNCH env NAME=yunting UUID="$UUID" PORT="$2" DOMAIN="$DOMAIN" \
-         LINK_HOST="$DOMAIN" LINK_PORT="$2" LINK_SECURITY=none \
+         LINK_HOST="${PLAIN_LINK_HOST:-$DOMAIN}" LINK_PORT="${PLAIN_LINK_PORT:-$2}" \
+         LINK_SECURITY="${PLAIN_LINK_SECURITY:-none}" LINK_SNI="${PLAIN_LINK_SNI:-$DOMAIN}" \
          "$NODE" app.js >> "$DIR/logs/$1.log" 2>&1 </dev/null &
      fi
      echo $! > "$pf"
@@ -330,6 +355,9 @@
    `LINK_HOST/LINK_PORT/LINK_SECURITY/LINK_SNI` 决定它在 `/<标识符>`
    路径下吐出的链接长什么样（地址、端口、是否加密、SNI），
    `CERT_FILE/KEY_FILE` 两项都给了它才走加密监听、缺了就是明文。
+   明文实例的 LINK_* 默认按直连形态生成；config.env 里填了
+   PLAIN_LINK_* 时改用那组值（用途见第二节步骤 5），守护补拉与
+   停机恢复走的都是同一份配置，参数不会丢。
 
    `guard.sh`——每 30 秒巡检，掉了补拉，只记拉起事件：
 
@@ -486,15 +514,24 @@
    目标端口选 `<高位端口乙>`（明文实例）→ 保存，平台会给一个子域名，
    记作 `<平台子域名>`。原理是平台边缘在标准 443 上替你终结加密、
    配上正规证书，再在内网把流量转给你的明文口。
-   然后让明文实例改吐这条链的链接：停掉明文实例，单独用改过的
-   链接参数重新拉起它（其余参数与 start.sh 里一致，只改 LINK_* 四项）：
+   然后让明文实例改吐这条链的链接。不要手工拼启动命令——把链接参数
+   写进 `~/yunting/config.env` 里预留的 PLAIN_LINK_* 四项（见第一节步骤 7），
+   start.sh 拉起明文实例时就会改用这组值，守护补拉、停机恢复之后也不会变回去：
+
+   ```ini
+   PLAIN_LINK_HOST=<平台子域名>
+   PLAIN_LINK_PORT=443
+   PLAIN_LINK_SECURITY=tls
+   PLAIN_LINK_SNI=<平台子域名>
+   ```
+
+   改完重启明文实例让新参数生效（守护在跑时也可以什么都不做，
+   等它 30 秒内补拉）：
 
    ```sh
-   cd ~/yunting/app && setsid env NAME=yunting UUID="<标识符>" PORT=<高位端口乙> \
-     DOMAIN="<平台子域名>" LINK_HOST="<平台子域名>" LINK_PORT=443 \
-     LINK_SECURITY=tls LINK_SNI="<平台子域名>" \
-     ~/yunting/node/bin/node app.js >> ~/yunting/logs/plain.log 2>&1 </dev/null &
-   echo $! > ~/yunting/run/plain.pid
+   kill $(cat ~/yunting/run/plain.pid) 2>/dev/null
+   sh ~/yunting/start.sh
+   curl -s http://127.0.0.1:<高位端口乙>/<标识符>   # 应吐出 443 端口、tls 形态的链接
    ```
 
    这样这个实例在 `/<标识符>` 吐出的就是免端口、真证书的链接，
@@ -642,7 +679,8 @@
    | `NAME` | `<标签>`（可选） | 只是链接里的备注名；注意它含 `server` 或 `hostypanel` 字样时，`/<标识符>` 会额外多吐一组优选地址的链接，不要这个行为就避开这两个词 |
    | `CERT_FILE` / `KEY_FILE` | 不填 | 平台在边缘终结加密，应用在容器内只跑明文 HTTP；填了反而会让它去找不存在的证书文件 |
 
-   提醒：`UUID`、`PORT`、`DOMAIN` 是 app.js 启动时逐项要读的，
+   提醒：`UUID`、`DOMAIN` 是 app.js 启动时一定要读到的
+   （`PORT` 由平台注入、不用操心），
    面板环境没有交互输入——`UUID` 或 `DOMAIN` 漏填，进程会卡在
    「等待输入」不动，日志页会停在类似「请输入 DOMAIN」的字样上，
    这不是平台故障，补上变量重新部署即可。
@@ -714,28 +752,4 @@
 - 守护在跑，且确认过「杀掉一个实例后能被自动补拉」。
 - 若平台会停机/回收：外部定时检查已就位，且演练过一次完整的恢复顺序
   （先起机器、再补实例、最后补守护）。
-- 文档与链接里没有任何真实标识符、端口、地址混在示例中流出。
-
----
-
-## 说明：本稿的展开程度
-
-本稿按「四项标准」定稿——每一类环境都把四件事说清：
-
-- **用啥**：工具、运行时、文件、命令点名到具体（下载工具自查命令、
-  yunting 仓文件清单、Node 运行时包名与地址形式、依赖清单内容）。
-- **在哪用**：执行位置写明——共享服务器与游戏沙盒给到账号主目录下的
-  目录示例树与每个文件的落位；面板主机给到仓库根目录清单、
-  面板的页面与字段（名称／区域／套餐／环境变量逐项）。
-- **怎么用**：可照做的编号步骤、命令给原文——运行时下载与解压、
-  `npm` 装依赖、config.env 逐项字段表、自签证书两条路线（openssl 命令
-  与纯 JS 生成器全文）、start.sh／guard.sh／stop.sh 完整脚本
-  （改占位符即可直接用）、curl 自查命令、平台停机后的四步恢复顺序、
-  面板主机的 Dockerfile 全文与逐行说明。
-- **注意啥**：每节保留「易踩的坑」，写明限制与顺序错了的后果
-  （先验实例再挂守护、scp 端口与应用端口之别、漏填变量卡在等待输入等）。
-
-要遮的只有隐私：真实账号、标识符、端口、IP 一律不出现；
-具体平台与服务器不点名，只用「某些…」泛称；文中示例值都是占位，
-照着替换成你自己的即可（Node 版本号、官方下载地址这类公开通用信息除外）。
-用啥、咋用不受这条限制，按上面四项写清。
+- 往外发链接、截图或日志求助时，先把自己的真实标识符、端口、地址遮掉再发。
