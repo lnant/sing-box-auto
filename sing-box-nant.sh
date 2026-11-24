@@ -149,9 +149,15 @@ DNS64_SERVERS=("2a01:4f8:c2c:123f::1" "2a01:4ff:f0:9876::1" "2a01:4f9:c010:3f02:
 _GH_OK=""
 
 gh_probe() {
-  local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 12 https://api.github.com 2>/dev/null) || true
-  [[ -n "$code" && "$code" != "000" ]]
+  # 两个入口任一通就算可达：个别环境（如某些沙盒）只挡 api.github.com
+  # 子域、github.com 本体与 Release 下载反而是通的，只探一个会误报「直连
+  # 不通」吓到用户（2026-11-24 sbx 实测）
+  local code url
+  for url in https://api.github.com https://github.com; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 12 "$url" 2>/dev/null) || true
+    [[ -n "$code" && "$code" != "000" ]] && return 0
+  done
+  return 1
 }
 
 ensure_github() {
@@ -450,7 +456,7 @@ prompt_user_domain() {
   PROMPT_DOMAIN_SET=0
   local _ip _bare _rtype
   _ip="$(get_ip)"
-  _bare="${_ip#[}"; _bare="${_ip%]}"   # 归一化：裸地址
+  _bare="${_ip#[}"; _bare="${_bare%]}"   # 归一化：裸地址
   [[ -n "$_bare" ]] || return 1
   if [[ "$_bare" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     _rtype="A"
@@ -663,7 +669,7 @@ ensure_tls_domain() {
   fi
   local _ip _bare
   _ip="$(get_ip)"
-  _bare="${_ip#[}"; _bare="${_ip%]}"   # 归一化：裸地址
+  _bare="${_ip#[}"; _bare="${_bare%]}"   # 归一化：裸地址
   if [[ "$_bare" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
     TLS_DOMAIN="${_bare//./-}.sslip.io"
     TLS_DOMAIN_AUTO=1
@@ -1719,6 +1725,66 @@ rm -rf "$_dir"
 return 1
 }
 
+# 经真实服务验证 WARP 出口：临时起一个客户端 sing-box，出站指向正在运行
+# 的服务本机的 VMess 入站（回环），经它取 Cloudflare trace，确认 warp=on/
+# plus 且数据真能流动。为什么不能只信 warp_probe：探针是独立进程、用自己
+# 的端点，服务进程的端点在模式切换后可能楔住（握手成、无数据）——
+# 2026-11-24 USARM 实测切「全走」后服务黑洞 30+ 分钟、探针却报正常，手动
+# 重启服务才恢复；只有经服务本体的流量验得出来。两种取 trace 的方式任一
+# 成功即算过：①域名经 socks5h（远端解析）；②IPv4 字面地址（运行时经 DoH
+# 查 www.cloudflare.com 的 A 记录再直连取 trace）——ipv4 模式下域名可能
+# 被服务解析成 v6 走直连，必须有一条钉死走 IPv4 的路径才验得到 WARP。
+# 返回 0=通过；1=不通过；2=无法验（VMess 参数缺失等），调用方按跳过处理
+warp_service_check() {
+[[ -n "${PORT_VMESS:-}" && -n "${UUID:-}" ]] || return 2
+local _dir _port _pid _out _try _v4
+_dir=$(mktemp -d)
+_port=$(rand_port)
+cat > "$_dir/client.json" <<EOF
+{
+  "log": {"level": "warn"},
+  "inbounds": [{"type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": $_port}],
+  "outbounds": [{"type": "vmess", "tag": "via-service", "server": "127.0.0.1", "server_port": $PORT_VMESS, "uuid": "$UUID", "security": "auto", "alter_id": 0, "transport": {"type": "ws", "path": "${UUID}-vm"}}]
+}
+EOF
+if ! "$SB_DIR/sing-box" check -c "$_dir/client.json" >/dev/null 2>&1; then
+rm -rf "$_dir"
+return 2
+fi
+"$SB_DIR/sing-box" run -c "$_dir/client.json" > "$_dir/client.log" 2>&1 &
+_pid=$!
+_out=""
+for _try in 1 2 3; do
+sleep 3
+_out=$(curl -s --max-time 10 -x "socks5h://127.0.0.1:$_port" \
+"https://www.cloudflare.com/cdn-cgi/trace" 2>/dev/null \
+| grep -E '^warp=' | cut -d= -f2 || true)
+[[ "$_out" == "on" || "$_out" == "plus" ]] && break
+_out=""
+# 方式②：IPv4 字面地址钉死走 v4 路径（ipv4 模式下 WARP 就管这一段）
+_v4=$(curl -fsSL --max-time 8 "https://cloudflare-dns.com/dns-query?name=www.cloudflare.com&type=A" \
+-H 'accept: application/dns-json' 2>/dev/null \
+| jq -r '.Answer[]? | select(.type==1) | .data' 2>/dev/null | head -n 1 || true)
+if [[ -n "$_v4" ]]; then
+_out=$(curl -s --max-time 10 -x "socks5://127.0.0.1:$_port" \
+-H "Host: www.cloudflare.com" "http://$_v4/cdn-cgi/trace" 2>/dev/null \
+| grep -E '^warp=' | cut -d= -f2 || true)
+[[ "$_out" == "on" || "$_out" == "plus" ]] && break
+_out=""
+fi
+done
+kill "$_pid" >/dev/null 2>&1 || true
+wait "$_pid" 2>/dev/null || true
+if [[ -n "$_out" ]]; then
+echo "[信息] 经真实服务验证通过：流量经服务入站走 WARP 出口（warp=$_out）"
+rm -rf "$_dir"
+return 0
+fi
+echo "[错误] 经真实服务验证未通过：经服务入站的流量没能走通 WARP 出口（探针进程正常不算数）"
+rm -rf "$_dir"
+return 1
+}
+
 # 解析 Cloudflare trace 全文（$1）：仅 warp=on/plus 时提取 ip= 与 loc=，
 # 成功输出一行「WARP 出口：<ip>（<loc>）」（缺 loc 时只输出 IP），否则返回 1。
 # trace 里的出口 IP 是 Cloudflare 的共享出口地址，只许展示给人看，
@@ -1738,10 +1804,10 @@ printf 'WARP 出口：%s\n' "$_ip"
 fi
 }
 
-# 展示当前 WARP 出口 IP 与落地国家：未启用时直接返回 1、不输出、也不起
-# 探针；启用时起临时 sing-box 经 WARP 拉 trace 再解析（探针配置与
-# warp_probe 共用，临时进程与目录用完即清理）。取不到返回 1 不输出，
-# 调用方一律以 || true 承接，绝不阻塞菜单与安装流程
+# 展示当前 WARP 出口 IP 与落地国家，并顺带一行流媒体/AI 解锁参考：未启用
+# 时直接返回 1、不输出、也不起探针；启用时起临时 sing-box 经 WARP 拉
+# trace 再解析（探针配置与 warp_probe 共用，临时进程与目录用完即清理）。
+# 取不到返回 1 不输出，调用方一律以 || true 承接，绝不阻塞菜单与安装流程
 warp_trace_info() {
 load_warp_env
 [[ "$WARP_MODE" != "off" ]] || return 1
@@ -1765,12 +1831,27 @@ _txt=""
 done
 local _line=""
 [[ -n "$_txt" ]] && _line=$(warp_trace_parse "$_txt" || true)
+if [[ -n "$_line" ]]; then
+# 同一探针会话内顺带做流媒体/AI 解锁判断（各一次短超时请求；仅展示用，
+# 判断结果只依赖状态码，与出口 IP 一样绝不落盘、不写任何 env/配置/链接）
+local _nf _dp _cg _nf_t _dp_t _cg_t
+_nf=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -x "socks5h://127.0.0.1:$_port" "https://www.netflix.com/title/81280792" 2>/dev/null || true)
+_dp=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -x "socks5h://127.0.0.1:$_port" "https://www.disneyplus.com/" 2>/dev/null || true)
+_cg=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -x "socks5h://127.0.0.1:$_port" "https://api.openai.com/v1/models" 2>/dev/null || true)
+case "$_nf" in 200) _nf_t="Netflix 可看" ;; 301|302|404) _nf_t="Netflix 仅自制剧" ;; 403) _nf_t="Netflix 未解锁" ;; *) _nf_t="Netflix 不通" ;; esac
+case "$_dp" in 200|301|302) _dp_t="Disney+ 可达" ;; 403) _dp_t="Disney+ 未解锁" ;; *) _dp_t="Disney+ 不通" ;; esac
+case "$_cg" in 401) _cg_t="ChatGPT 可达" ;; 403) _cg_t="ChatGPT 未解锁" ;; *) _cg_t="ChatGPT 不通" ;; esac
 kill "$_pid" >/dev/null 2>&1 || true
 wait "$_pid" 2>/dev/null || true
 rm -rf "$_dir"
-[[ -n "$_line" ]] || return 1
 printf '%s\n' "$_line"
+printf '解锁参考：%s · %s · %s（经 WARP 出口实测）\n' "$_nf_t" "$_dp_t" "$_cg_t"
 return 0
+fi
+kill "$_pid" >/dev/null 2>&1 || true
+wait "$_pid" 2>/dev/null || true
+rm -rf "$_dir"
+return 1
 }
 
 # 回滚 WARP 变更：恢复 nant.env / sb.json / warp.env 三件套备份并重启服务
@@ -1805,9 +1886,31 @@ return 1
 fi
 setup_service
 if [[ "$_mode" != "off" ]] && ! warp_probe; then
+# 新注册的 WARP 账号常有几分钟未激活期（实测最长约 10 分钟，静置后自愈）：
+# 立刻判死会把能用的参数回滚掉。先静置 90 秒、用同一套参数复试一次探针，
+# 复试仍不过才按原口径回滚（七合一的静置复试经验）
+echo "[信息] 出口自检未通过：新注册的 WARP 账号可能还没激活，静置 90 秒后复试一次…"
+sleep 90
+if ! warp_probe; then
 echo "[错误] WARP 已写入配置但出口自检未通过，已自动回滚到之前的状态"
 warp_rollback
 return 1
+fi
+echo "[信息] 复试通过（新账号激活较慢，属正常现象）"
+fi
+if [[ "$_mode" != "off" ]]; then
+# 探针自检过的是独立进程，服务进程的 WARP 端点在切换后可能楔住（握手成、
+# 无数据）：额外重启一次服务，再经真实服务入站验一次出口，两步都做完才
+# 算生效；真实服务验不过同样回滚（口径与探针失败一致）
+restart_service
+local _sc=0
+warp_service_check || _sc=$?
+if [[ "$_sc" == "1" ]]; then
+echo "[错误] WARP 探针自检通过，但经真实服务的出口验证未通过，已自动回滚到之前的状态"
+warp_rollback
+return 1
+fi
+[[ "$_sc" == "2" ]] && echo "[信息] 缺少 VMess 入站参数，跳过经真实服务的出口验证（探针自检与额外重启已完成）"
 fi
 rm -f "$ENV_FILE.bak" "$SB_DIR/sb.json.bak" "$WARP_ENV_FILE.bak"
 echo "[完成] WARP 出站模式已更新：$(warp_mode_desc)"
@@ -1819,11 +1922,17 @@ return 0
 }
 
 # 切换 WARP 模式：需要时才注册（已有参数直接复用，幂等），参数就绪后交给
-# _warp_commit 原子生效。调用前须已加载 nant.env（菜单分支负责）
+# _warp_commit 原子生效。调用前须已加载 nant.env（菜单分支负责）。
+# $1=目标模式 off|ipv4|all  $2=1 时强制重新注册（先清参数再注册，供换 IP 用；
+# 注册失败时只是内存里的参数被清，warp.env 原样未动，等于未做任何修改）
 warp_apply() {
-local _mode="$1"
+local _mode="$1" _force="${2:-0}"
 load_warp_env
-if [[ "$_mode" != "off" ]]; then
+if [[ "$_mode" != "off" || "$_force" == "1" ]]; then
+if [[ "$_force" == "1" ]]; then
+WARP_PRIVATE_KEY=""; WARP_V4=""; WARP_V6=""; WARP_RESERVED=""
+WARP_PEER_KEY=""; WARP_ENDPOINT_HOST=""; WARP_ENDPOINT_PORT=""; WARP_MTU=""
+fi
 if ! warp_profile_complete; then
 if ! warp_register; then
 echo "[错误] WARP 注册未完成，未做任何修改"
@@ -1832,6 +1941,25 @@ fi
 fi
 fi
 _warp_commit "$_mode"
+}
+
+# 更换 WARP IP：强制重新注册一套设备参数（出口 IP 随新账号变更），保持当前
+# 模式不变。一次调用只换一次——频繁注册会招 Cloudflare 注册限流（429），
+# 想再换请隔段时间。底层走 warp_apply 的强制注册路径：先备份、生成新配置、
+# 重启、出口自检，任一步失败自动回滚到旧参数与旧配置（原出口 IP 保住）；
+# 普通模式切换的「参数齐全直接复用」幂等路径不经过这里、不受影响
+warp_reroll() {
+load_warp_env
+if [[ "$WARP_MODE" == "off" ]]; then
+echo "[提示] WARP 当前为关闭状态，没有可更换的出口 IP；请先在本菜单选 1 或 2 启用 WARP"
+return 0
+fi
+echo "[信息] 正在更换 WARP IP（重新注册一套设备参数，模式保持：$(warp_mode_desc)）…"
+if warp_apply "$WARP_MODE" 1; then
+return 0
+fi
+echo "[提示] 更换 WARP IP 未成功，已恢复原有参数与配置（原出口 IP 保持不变）"
+return 0
 }
 
 # 本机是否有可用的 IPv4 出口（与 ensure_github 的 IPv6 检测同一探法）
@@ -1892,13 +2020,15 @@ fi
 echo " 1) IPv4 经 WARP（推荐：给纯 IPv6 机器补 IPv4 出口）"
 echo " 2) 全部流量经 WARP"
 echo " 3) 关闭 WARP 出站（配置里不留任何 WARP 内容，零成本）"
+echo " 4) 更换 WARP IP（重新注册换一套参数，出口随之变更；频繁更换可能触发 Cloudflare 注册限流）"
 echo " 0) 返回（回车/20 秒无输入默认返回）"
 local c
-c=$(read_choice "请选择 [0-3]：")
+c=$(read_choice "请选择 [0-4]：")
 case "$c" in
 1) warp_apply ipv4 || true;;
 2) warp_apply all || true;;
 3) warp_apply off || true;;
+4) warp_reroll || true;;
 0|"") return 0;;
 *) echo "无效选择：$c";;
 esac
@@ -2161,8 +2291,13 @@ main() {
     update-script) do_update_script ;;
     links) print_links ;;
     restart) restart_service ;;
+    warp-reroll)
+      [[ -f "$ENV_FILE" ]] || { echo "[错误] 尚未安装，请先运行安装"; exit 1; }
+      . "$ENV_FILE"
+      warp_reroll
+      ;;
     menu) do_menu ;;
-    *) echo "用法：$0 [install|uninstall|update-core|update-script|links|restart|menu|version]"; exit 1 ;;
+    *) echo "用法：$0 [install|uninstall|update-core|update-script|links|restart|warp-reroll|menu|version]"; exit 1 ;;
   esac
 }
 
