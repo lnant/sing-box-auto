@@ -58,8 +58,10 @@ Node edition (Node.js runtime; no root or systemd required):
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/node-auto.sh | sh
 ```
 
-Requirements: a Linux server (Debian / Ubuntu / CentOS / Oracle Linux, etc.), **root**,
-x86_64 / arm64 / armv7. ≥1 GB RAM recommended (add swap below that). With systemd,
+Requirements (sing-box editions): a Linux server (Debian / Ubuntu / CentOS / Oracle Linux, etc.), **root**,
+x86_64 / arm64 / armv7. The Node edition needs neither root nor systemd —
+just POSIX sh, tar and any one download tool (curl / wget / fetch / python3 /
+perl); see [NODE-AUTO.md](NODE-AUTO.md). ≥1 GB RAM recommended (add swap below that). With systemd,
 the service and the Argo tunnel are systemd-managed (auto-restart on crash); without
 systemd the script falls back to cron `@reboot` entries.
 

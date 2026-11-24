@@ -59,8 +59,10 @@ Node 版（Node.js 运行时，不需要 root、不需要 systemd）：
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/node-auto.sh | sh
 ```
 
-要求：Linux 服务器（Debian / Ubuntu / CentOS / Oracle Linux 等），**root 权限**，
-x86_64 / arm64 / armv7 架构。另外：
+要求（sing-box 系版本）：Linux 服务器（Debian / Ubuntu / CentOS / Oracle Linux 等），**root 权限**，
+x86_64 / arm64 / armv7 架构。Node 版不需要 root、不需要 systemd，
+有 POSIX sh、tar 和任意一种下载工具（curl / wget / fetch / python3 / perl）即可，
+细节见 [NODE-AUTO.md](NODE-AUTO.md)。另外（以下为 sing-box 系版本）：
 
 - **内存**：建议 ≥1 GB；小于 1 GB 请先加 swap（脚本对"内存 <1 GB 且无 swap"会预警，
   小内存机器装依赖时包管理器可能 OOM 卡死整机）。
