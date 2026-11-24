@@ -1,21 +1,22 @@
 #!/bin/bash
 ###############################################################################
-# sing-box 全自动一键安装脚本（6 协议版）
+# sing-box 全自动一键安装脚本（7 协议版）
 #
-# 功能：零交互，一次装好以下 6 种协议
+# 功能：零交互，一次装好以下 7 种协议
 #   [1] VLESS + Reality (TCP)
 #   [2] VMess + WebSocket (TCP)
-#   [3] VMess + Argo 隧道 (Cloudflare 临时隧道，转发到 VMess-WS)
-#   [4] Hysteria2 (UDP)
-#   [5] TUIC v5 (UDP)
-#   [6] AnyTLS (TCP)
+#   [3] Hysteria2 (UDP)
+#   [4] TUIC v5 (UDP)
+#   [5] AnyTLS (TCP)
+#   [6] Trojan (TCP)
+#   [7] Shadowsocks 2022 (TCP/UDP)
 #
 # 用法：
 #   安装：curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-auto.sh | sudo bash
 #   卸载：curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-auto.sh | sudo bash -s -- uninstall
 #   管理菜单：curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-auto.sh | sudo bash -s -- menu
 #   （或下载后 sudo bash sing-box-auto.sh menu）
-#   动作参数：menu | change-uuid | change-reality | change-cert | change-argo
+#   动作参数：menu | change-uuid | change-reality | change-cert
 #            | change-ports | show-links | restart | uninstall | update-script | update-core | version
 #   快捷命令：安装时会自动装好 sbox 命令（/usr/local/bin/sbox），之后直接打
 #            sbox 就进管理菜单（非 root 会自动 sudo 提权），sbox <动作> 执行对应操作
@@ -23,7 +24,7 @@
 # 特性：
 #   - 全程无交互：UUID、密码、Reality 密钥对全部自动生成
 #   - 随机端口：新装时 5 个协议端口在 10000-60000 内随机分配（互不冲突，避开已占用），
-#     多台服务器端口各不相同；重跑/升级保留已有端口，菜单 5 可手动改
+#     多台服务器端口各不相同；重跑/升级保留已有端口，菜单 4 可手动改
 #   - 防火墙：自动从配置提取监听端口并在 firewalld/ufw/iptables 放行，
 #     配置增减协议或换端口时自动跟上
 #   - 证书：自动生成 www.bing.com 自签证书（供 Hy2/TUIC/AnyTLS/VMess-WS 使用）
@@ -40,20 +41,19 @@ set -euo pipefail
 if [[ "$(basename "$0")" == "sbox" && $# -eq 0 ]]; then
   ACTION="menu"
 else
-  ACTION="${1:-install}"        # install | uninstall | menu | change-uuid | change-reality | change-cert | change-argo | change-ports | show-links | restart | update-script | update-core | version
+  ACTION="${1:-install}"        # install | uninstall | menu | change-uuid | change-reality | change-cert | change-ports | show-links | restart | update-script | update-core | version
 fi
 
-SCRIPT_VERSION="1.1.3"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
+SCRIPT_VERSION="1.2.0"          # 脚本版本号（与仓库 tag / Release 对应，见 CHANGELOG.md）
 
 # version 动作只打印版本，不需要 root / 已安装，提前处理
 if [[ "$ACTION" == "version" ]]; then
-  echo "sing-box-auto v${SCRIPT_VERSION}（全自动 6 协议版）"
+  echo "sing-box-auto v${SCRIPT_VERSION}（全自动 7 协议版）"
   exit 0
 fi
 
 SB_DIR="/etc/s-box"
 UNIT="sing-box-auto"           # systemd 服务名：用专属名，避免覆盖机器上已有的其他 sing-box 安装
-ARGO_UNIT="${UNIT}-argo"       # Argo 隧道的 systemd 服务名（cloudflared 交 systemd 托管，崩溃自动拉起）
 ENV_FILE="$SB_DIR/auto.env"    # 持久化：UUID/端口/密钥，重跑时复用
 LINKS_FILE="/root/singbox-links.txt"
 
@@ -230,7 +230,7 @@ open_firewall() {
   fi
   # 回退：配置文件不存在或 jq 不可用时，用 PORT_* 变量
   if [[ -z "${ports// }" ]]; then
-    ports="${PORT_VLESS:-} ${PORT_VMESS:-} ${PORT_HY2:-} ${PORT_TUIC:-} ${PORT_ANYTLS:-}"
+    ports="${PORT_VLESS:-} ${PORT_VMESS:-} ${PORT_HY2:-} ${PORT_TUIC:-} ${PORT_ANYTLS:-} ${PORT_TROJAN:-} ${PORT_SS2022:-}"
   fi
   if [[ -z "${ports// }" ]]; then
     echo "[警告] 未找到需要放行的端口，跳过防火墙设置"
@@ -323,7 +323,7 @@ ensure_github() {
   echo "[信息] GitHub 直连不通，检测是否为纯 IPv6 / IPv4 出站异常环境…" >&2
   if ! curl -6 -fsS --connect-timeout 5 --max-time 10 https://www.cloudflare.com/cdn-cgi/trace >/dev/null 2>&1; then
     echo "[警告] 本机也没有 IPv6 出站，无法自动绕行到 GitHub。" >&2
-    echo "[警告] 可手动把 sing-box 二进制预置到 $SB_DIR/sing-box、cloudflared 预置到 $SB_DIR/cloudflared 后重跑安装（脚本会跳过下载）。" >&2
+    echo "[警告] 可手动把 sing-box 二进制预置到 $SB_DIR/sing-box 后重跑安装（脚本会跳过下载）。" >&2
     return 1
   fi
   local s
@@ -540,6 +540,10 @@ PORT_VMESS="$PORT_VMESS"
 PORT_HY2="$PORT_HY2"
 PORT_TUIC="$PORT_TUIC"
 PORT_ANYTLS="$PORT_ANYTLS"
+PORT_TROJAN="$PORT_TROJAN"
+PORT_SS2022="$PORT_SS2022"
+TROJAN_PWD="$TROJAN_PWD"
+SS2022_KEY="$SS2022_KEY"
 EOF
   chmod 600 "$ENV_FILE"
 }
@@ -550,17 +554,20 @@ load_or_gen_identity() {
     # shellcheck disable=SC1090
     . "$ENV_FILE"
     # 兼容精简版写下的 env：缺失的协议端口随机分配
-    local used=" ${PORT_VLESS:-} ${PORT_VMESS:-} ${PORT_HY2:-} ${PORT_TUIC:-} ${PORT_ANYTLS:-} "
+    local used=" ${PORT_VLESS:-} ${PORT_VMESS:-} ${PORT_HY2:-} ${PORT_TUIC:-} ${PORT_ANYTLS:-} ${PORT_TROJAN:-} ${PORT_SS2022:-} "
     # 缺哪个补哪个：逐个显式分配并校验结果，不用链式 &&——链式写法在 rand_port 失败时会
     # 留下空端口继续往下跑，直到写配置时才以误导性报错失败
     local _pv _p
-    for _pv in PORT_VLESS PORT_VMESS PORT_HY2 PORT_TUIC PORT_ANYTLS; do
+    for _pv in PORT_VLESS PORT_VMESS PORT_HY2 PORT_TUIC PORT_ANYTLS PORT_TROJAN PORT_SS2022; do
       if [[ -z "${!_pv:-}" ]]; then
         _p=$(rand_port "$used") || { echo "[错误] 端口分配失败，无法继续"; exit 1; }
         printf -v "$_pv" '%s' "$_p"
         used+=" $_p "
       fi
     done
+    # 旧 env 没有 Trojan/SS2022 凭据时补生成（新协议随升级自动带上，零交互）
+    [[ -z "${TROJAN_PWD:-}" ]] && TROJAN_PWD=$(openssl rand -hex 16)
+    [[ -z "${SS2022_KEY:-}" ]] && SS2022_KEY=$(openssl rand -base64 16 | tr -d '\n')
     if [[ -n "${UUID:-}" && -n "${PRIVKEY:-}" && -n "${PUBKEY:-}" && -n "${SHORTID:-}" ]]; then
       echo "[信息] 检测到已有配置，UUID/端口/密钥保持不变（幂等重跑）"
       save_env
@@ -578,10 +585,14 @@ load_or_gen_identity() {
       PORT_HY2=$(jq -r '.inbounds[2].listen_port // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
       PORT_TUIC=$(jq -r '.inbounds[3].listen_port // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
       PORT_ANYTLS=$(jq -r '.inbounds[4].listen_port // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
+      PORT_TROJAN=$(jq -r '.inbounds[5].listen_port // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
+      PORT_SS2022=$(jq -r '.inbounds[6].listen_port // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
+      TROJAN_PWD=$(jq -r '.inbounds[5].users[0].password // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
+      SS2022_KEY=$(jq -r '.inbounds[6].password // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
       # 导入值逐个校验：残缺配置（inbound 不足 5 个）会读出空/null/非数字，坏端口直接随机补齐，
       # 避免把坏值写进新配置、最后在 sing-box check 处以误导性报错失败
       local _used=" " _pv _v _p
-      for _pv in PORT_VLESS PORT_VMESS PORT_HY2 PORT_TUIC PORT_ANYTLS; do
+      for _pv in PORT_VLESS PORT_VMESS PORT_HY2 PORT_TUIC PORT_ANYTLS PORT_TROJAN PORT_SS2022; do
         _v="${!_pv:-}"
         if [[ "$_v" =~ ^[0-9]+$ ]] && (( _v >= 1 && _v <= 65535 )) && [[ "$_used" != *" $_v "* ]]; then
           _used+=" $_v "
@@ -591,6 +602,9 @@ load_or_gen_identity() {
           _used+=" $_p "
         fi
       done
+      # 残留配置没有新协议凭据时补生成
+      [[ -z "${TROJAN_PWD:-}" ]] && TROJAN_PWD=$(openssl rand -hex 16)
+      [[ -z "${SS2022_KEY:-}" ]] && SS2022_KEY=$(openssl rand -base64 16 | tr -d '\n')
       PRIVKEY=$(jq -r '.inbounds[0].tls.reality.private_key // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
       SHORTID=$(jq -r '.inbounds[0].tls.reality.short_id[0] // empty' "$SB_DIR/sb.json" 2>/dev/null || true)
       PUBKEY="$(cat "$SB_DIR/public.key" 2>/dev/null || true)"
@@ -623,7 +637,11 @@ load_or_gen_identity() {
   PORT_HY2=$(rand_port "$used"); used+=" $PORT_HY2 "
   PORT_TUIC=$(rand_port "$used"); used+=" $PORT_TUIC "
   PORT_ANYTLS=$(rand_port "$used"); used+=" $PORT_ANYTLS "
-  echo "[信息] 端口分配：VLESS=$PORT_VLESS VMess-WS=$PORT_VMESS Hy2=$PORT_HY2 TUIC=$PORT_TUIC AnyTLS=$PORT_ANYTLS"
+  PORT_TROJAN=$(rand_port "$used"); used+=" $PORT_TROJAN "
+  PORT_SS2022=$(rand_port "$used"); used+=" $PORT_SS2022 "
+  TROJAN_PWD=$(openssl rand -hex 16)
+  SS2022_KEY=$(openssl rand -base64 16 | tr -d '\n')
+  echo "[信息] 端口分配：VLESS=$PORT_VLESS VMess-WS=$PORT_VMESS Hy2=$PORT_HY2 TUIC=$PORT_TUIC AnyTLS=$PORT_ANYTLS Trojan=$PORT_TROJAN SS2022=$PORT_SS2022"
   save_env
 }
 
@@ -803,6 +821,22 @@ write_config() {
         "certificate_path": "$SB_DIR/cert.pem",
         "key_path": "$SB_DIR/private.key"
       }
+    },
+    {
+      "type": "trojan", "tag": "trojan",
+      "listen": "::", "listen_port": $PORT_TROJAN,
+      "users": [{"password": "$TROJAN_PWD"}],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "$SB_DIR/cert.pem",
+        "key_path": "$SB_DIR/private.key"
+      }
+    },
+    {
+      "type": "shadowsocks", "tag": "ss2022",
+      "listen": "::", "listen_port": $PORT_SS2022,
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "$SS2022_KEY"
     }
   ],
   "outbounds": [{"type": "direct", "tag": "direct"}]${_net_tail}
@@ -814,7 +848,7 @@ EOF
 }
 
 #----------------------------- 7.5 cron 守护 -----------------------------------
-# Argo 隧道与无 systemd 时的 sing-box 自启都依赖 crontab 的 @reboot 条目，
+# 无 systemd 时 sing-box 的自启依赖 crontab 的 @reboot 条目，
 # 但装好 crontab 命令不等于 cron 守护在运行（RHEL 系装完 cronie 默认不启用），这里统一保证
 ensure_cron_running() {
   if [[ -d /run/systemd/system ]] || pidof systemd >/dev/null 2>&1; then
@@ -828,7 +862,7 @@ ensure_cron_running() {
         return 0
       fi
     fi
-    echo "[警告] 未能启用 cron 服务：重启后 Argo 隧道（及无 systemd 时的 sing-box）无法自动拉起，请手动启用 cron/crond 服务"
+    echo "[警告] 未能启用 cron 服务：重启后 sing-box（无 systemd 时）无法自动拉起，请手动启用 cron/crond 服务"
   fi
 }
 
@@ -922,120 +956,7 @@ ROT
   fi
 }
 
-#----------------------------- 9. Argo 临时隧道 -------------------------------
-# cloudflared 临时隧道无需 Cloudflare 账号授权；
-# 固定隧道需要手动在 CF 官网创建并填 token，无法自动化，本脚本只做临时隧道。
-# 隧道失败不阻塞：拿不到域名就跳过，只是不输出第 3 条链接。
-# 有 systemd 时把 cloudflared 交给 systemd 托管（崩溃自动拉起 + 开机自启），成功返回 0；
-# 无 systemd 时返回 1，调用方回退到 nohup + crontab 老路径（进程死了只能等重启，是临时方案）
-
-# 从 cloudflared 日志里提取当前临时隧道域名。取第二个匹配：第一个是日志里
-# api.trycloudflare.com 的提示链接，第二个才是本隧道的域名。解析逻辑集中在一处，
-# cloudflared 改日志版式时只修这里（此前同一段 grep 在 5 处各复制一份）
-current_argo_domain() {
-  grep -a -o 'https://[^ "]*trycloudflare.com' "$SB_DIR/argo.log" 2>/dev/null | head -n 2 | tail -n 1 | sed 's|https://||' || true
-}
-
-start_argo_systemd() {
-  local exec_cmd="$1"
-  if [[ -d /run/systemd/system ]] || pidof systemd >/dev/null 2>&1; then
-    cat > "/etc/systemd/system/${ARGO_UNIT}.service" <<EOF
-[Unit]
-Description=cloudflared Argo tunnel (sing-box-auto)
-After=network.target
-
-[Service]
-ExecStart=$exec_cmd
-Restart=always
-RestartSec=10
-StandardOutput=append:$SB_DIR/argo.log
-StandardError=append:$SB_DIR/argo.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    # 清掉老的 crontab @reboot 自启，避免与 systemd 托管双开
-    if command -v crontab >/dev/null 2>&1; then
-      (crontab -l 2>/dev/null | grep -v "cloudflared.*tunnel") | crontab - >/dev/null 2>&1 || true
-    fi
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    systemctl enable "$ARGO_UNIT" >/dev/null 2>&1 || true
-    systemctl restart "$ARGO_UNIT" >/dev/null 2>&1 || true
-    return 0
-  fi
-  return 1
-}
-
-start_argo() {
-  # 如果配置了固定隧道，优先使用固定隧道
-  if [[ -f "$SB_DIR/argo.env" ]]; then
-    local _am
-    _am=$(grep '^ARGO_MODE=' "$SB_DIR/argo.env" 2>/dev/null | cut -d'"' -f2)
-    if [[ "$_am" == "fixed" ]]; then
-      # shellcheck disable=SC1090
-      . "$SB_DIR/argo.env"
-      start_argo_fixed
-      return 0
-    fi
-  fi
-  echo "[信息] 启动 Argo 临时隧道…"
-  local cf="$SB_DIR/cloudflared"
-  if [[ ! -x "$cf" ]]; then
-    echo "[信息] 下载 cloudflared…"
-    # cloudflared 的资产命名与 sing-box 不同：官方没有 armv7 资产，arm 版即给 armv7 用；
-    # 且菜单路径下 ARCH 可能未设置，这里按 uname 现算，不依赖 detect_arch
-    local cf_arch
-    case "$(uname -m)" in
-      x86_64) cf_arch="amd64" ;;
-      aarch64) cf_arch="arm64" ;;
-      armv7l) cf_arch="arm" ;;
-      *) cf_arch="${ARCH:-amd64}" ;;
-    esac
-    if ! curl -fSL --retry 2 --max-time 120 -o "$cf" \
-      "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${cf_arch}"; then
-      echo "[警告] cloudflared 下载失败，跳过 Argo（不影响其他 5 种协议）"
-      ARGO_DOMAIN=""
-      return 0
-    fi
-    chmod +x "$cf"
-  fi
-  systemctl stop "$ARGO_UNIT" >/dev/null 2>&1 || true   # 若之前由 systemd 托管，先停掉避免双开
-  pkill -f "cloudflared.*tunnel.*--url" >/dev/null 2>&1 || true
-  sleep 1
-  : > "$SB_DIR/argo.log"   # 清空旧日志，避免抓到上一次隧道的域名
-  local argo_managed=0
-  if start_argo_systemd "$cf tunnel --url http://localhost:${PORT_VMESS} --edge-ip-version auto --no-autoupdate --protocol http2"; then
-    argo_managed=1
-    echo "[信息] Argo 临时隧道已由 systemd 托管（崩溃自动拉起）"
-  else
-    nohup "$cf" tunnel --url "http://localhost:${PORT_VMESS}" \
-      --edge-ip-version auto --no-autoupdate --protocol http2 \
-      > "$SB_DIR/argo.log" 2>&1 &
-  fi
-  echo "[信息] 等待 Cloudflare 分配临时域名（最多约 60 秒）…"
-  ARGO_DOMAIN=""
-  local _i
-  for _i in $(seq 1 20); do
-    sleep 3
-    ARGO_DOMAIN="$(current_argo_domain)"
-    [[ -n "$ARGO_DOMAIN" ]] && break
-  done
-  if [[ -n "${ARGO_DOMAIN:-}" ]]; then
-    echo "[信息] Argo 临时域名：$ARGO_DOMAIN（重启后会变化）"
-    if [[ "$argo_managed" -eq 0 ]] && command -v crontab >/dev/null 2>&1; then
-      # 宽匹配：切回临时隧道时，把固定隧道的开机自启也清掉，避免重启后双隧道齐跑
-      (crontab -l 2>/dev/null | grep -v "cloudflared.*tunnel"
-       echo "@reboot sleep 15 && $cf tunnel --url http://localhost:${PORT_VMESS} --edge-ip-version auto --no-autoupdate --protocol http2 > $SB_DIR/argo.log 2>&1 &") | crontab - >/dev/null 2>&1 || true
-    fi
-  else
-    echo "[警告] 未能获取 Argo 域名，跳过 VMess+Argo（不影响其他 5 种协议）"
-    echo "[提示] 隧道日志最后几行："
-    tail -n 5 "$SB_DIR/argo.log" 2>/dev/null || true
-    ARGO_DOMAIN=""
-  fi
-}
-
-#----------------------------- 10. 输出客户端链接 ----------------------------
+#----------------------------- 9. 输出客户端链接 -----------------------------
 get_ip() {
   # 多个公网 IP 查询源依次尝试，返回内容必须是合法 IP 才采用；v4 优先，其次 v6
   # 全部失败时输出空字符串，由 print_links 给出明确警告（不再静默生成坏链接）
@@ -1060,7 +981,7 @@ print_links() {
   ip_bare="${ip#[}"; ip_bare="${ip_bare%]}"   # 裸地址：仅 VMess 的 add 字段用（base64-JSON 不是 URI，不带方括号）
   host="$(hostname)"
 
-  local vl_link vm_link hy2_link tuic_link an_link
+  local vl_link vm_link hy2_link tuic_link an_link tr_link ss_link
   vl_link="vless://${UUID}@${ip}:${PORT_VLESS}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI_REALITY}&fp=chrome&pbk=${PUBKEY}&sid=${SHORTID}&type=tcp&headerType=none#vl-reality-${host}"
 
   vm_link="vmess://$(printf '{"add":"%s","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s-vm","port":"%s","ps":"vm-ws-%s","tls":"","type":"none","v":"2"}' \
@@ -1071,6 +992,10 @@ print_links() {
   tuic_link="tuic://${UUID}:${UUID}@${ip}:${PORT_TUIC}?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=${SNI_SELF}&insecure=1&allowInsecure=1&allow_insecure=1#tu5-${host}"
 
   an_link="anytls://${UUID}@${ip}:${PORT_ANYTLS}?&sni=${SNI_SELF}&allowInsecure=1&insecure=1#anytls-${host}"
+
+  tr_link="trojan://${TROJAN_PWD}@${ip}:${PORT_TROJAN}?security=tls&sni=${SNI_SELF}&allowInsecure=1&insecure=1#trojan-${host}"
+
+  ss_link="ss://$(printf '%s' "2022-blake3-aes-128-gcm:${SS2022_KEY}" | b64)@${ip}:${PORT_SS2022}#ss2022-${host}"
 
   {
     echo "================ sing-box 节点链接 ================"
@@ -1087,24 +1012,20 @@ print_links() {
     echo "[2] VMess + WS (TCP/${PORT_VMESS})"
     echo "$vm_link"
     echo
-    if [[ -n "${ARGO_DOMAIN:-}" ]]; then
-      local argo_link
-      argo_link="vmess://$(printf '{"add":"cloudflare-ech.com","aid":"0","host":"%s","id":"%s","net":"ws","path":"%s-vm","port":"443","ps":"vm-argo-%s","tls":"tls","sni":"%s","fp":"chrome","type":"none","v":"2"}' \
-        "$ARGO_DOMAIN" "$UUID" "$UUID" "$host" "$ARGO_DOMAIN" | b64)"
-      echo "[3] VMess + Argo 隧道（${ARGO_DOMAIN}，重启后会变）"
-      echo "$argo_link"
-    else
-      echo "[3] VMess + Argo：本次未能建立隧道，已跳过"
-    fi
-    echo
-    echo "[4] Hysteria2 (UDP/${PORT_HY2})"
+    echo "[3] Hysteria2 (UDP/${PORT_HY2})"
     echo "$hy2_link"
     echo
-    echo "[5] TUIC v5 (UDP/${PORT_TUIC})"
+    echo "[4] TUIC v5 (UDP/${PORT_TUIC})"
     echo "$tuic_link"
     echo
-    echo "[6] AnyTLS (TCP/${PORT_ANYTLS})"
+    echo "[5] AnyTLS (TCP/${PORT_ANYTLS})"
     echo "$an_link"
+    echo
+    echo "[6] Trojan (TCP/${PORT_TROJAN})"
+    echo "$tr_link"
+    echo
+    echo "[7] Shadowsocks 2022 (TCP+UDP/${PORT_SS2022})"
+    echo "$ss_link"
     echo
     echo "==================================================="
     echo "提示：链接已保存到 $LINKS_FILE"
@@ -1112,15 +1033,16 @@ print_links() {
   chmod 600 "$LINKS_FILE"
 }
 
-#----------------------------- 11. 卸载 --------------------------------------
+#----------------------------- 10. 卸载 --------------------------------------
 do_uninstall() {
   echo "[信息] 卸载 sing-box…"
   systemctl stop "$UNIT" >/dev/null 2>&1 || true
   systemctl disable "$UNIT" >/dev/null 2>&1 || true
   rm -f "/etc/systemd/system/${UNIT}.service"
-  systemctl stop "$ARGO_UNIT" >/dev/null 2>&1 || true
-  systemctl disable "$ARGO_UNIT" >/dev/null 2>&1 || true
-  rm -f "/etc/systemd/system/${ARGO_UNIT}.service"
+  # 旧版 Argo 隧道残留（本版已移除 Argo 功能）：单元一并清掉，避免卸载后隧道还在跑
+  systemctl stop "${UNIT}-argo" >/dev/null 2>&1 || true
+  systemctl disable "${UNIT}-argo" >/dev/null 2>&1 || true
+  rm -f "/etc/systemd/system/${UNIT}-argo.service"
   # 旧版通名服务：确认是本脚本装的（指向 $SB_DIR）才一并清理，别人的 sing-box 不碰
   if [[ -f /etc/systemd/system/sing-box.service ]] && grep -q "$SB_DIR/sing-box" /etc/systemd/system/sing-box.service; then
     systemctl stop sing-box >/dev/null 2>&1 || true
@@ -1129,9 +1051,9 @@ do_uninstall() {
   fi
   systemctl daemon-reload >/dev/null 2>&1 || true
   pkill -f "$SB_DIR/sing-box run" >/dev/null 2>&1 || true
-  pkill -f "cloudflared.*tunnel" >/dev/null 2>&1 || true
+  pkill -f "cloudflared.*tunnel" >/dev/null 2>&1 || true   # 旧版 Argo 进程残留
   if command -v crontab >/dev/null 2>&1; then
-    # 注意：固定隧道和临时隧道的 crontab 格式不同，用宽匹配一起清掉
+    # cloudflared 一项是清旧版 Argo 的 @reboot 自启残留
     (crontab -l 2>/dev/null | grep -v "sing-box run" | grep -v "cloudflared.*tunnel") | crontab - >/dev/null 2>&1 || true
   fi
   rm -rf "$SB_DIR" "$LINKS_FILE"
@@ -1140,7 +1062,7 @@ do_uninstall() {
   echo "[信息] 卸载完成"
 }
 
-#----------------------------- 12. 管理菜单 ------------------------------------
+#----------------------------- 11. 管理菜单 ------------------------------------
 # 加载已保存的配置，不存在则报错退出
 load_env_or_exit() {
   if [[ ! -f "$ENV_FILE" ]]; then
@@ -1149,12 +1071,21 @@ load_env_or_exit() {
   fi
   # shellcheck disable=SC1090
   . "$ENV_FILE"
-  if [[ -f "$SB_DIR/argo.env" ]]; then
-    # shellcheck disable=SC1090
-    . "$SB_DIR/argo.env"
-  fi
-  if [[ -z "${ARGO_DOMAIN:-}" && "${ARGO_MODE:-}" != "fixed" ]]; then
-    ARGO_DOMAIN="$(current_argo_domain)"
+  # 旧版 env 没有 Trojan/SS2022 时补齐并回写：菜单里的改 UUID/改端口等都会重写配置，
+  # 缺项直接写配置会生成空端口/空密码的坏入站
+  if [[ -z "${PORT_TROJAN:-}" || -z "${PORT_SS2022:-}" || -z "${TROJAN_PWD:-}" || -z "${SS2022_KEY:-}" ]]; then
+    local _used=" ${PORT_VLESS:-} ${PORT_VMESS:-} ${PORT_HY2:-} ${PORT_TUIC:-} ${PORT_ANYTLS:-} ${PORT_TROJAN:-} ${PORT_SS2022:-} " _p
+    if [[ -z "${PORT_TROJAN:-}" ]]; then
+      _p=$(rand_port "$_used") || { echo "[错误] 端口分配失败，无法继续"; exit 1; }
+      PORT_TROJAN="$_p"; _used+=" $_p "
+    fi
+    if [[ -z "${PORT_SS2022:-}" ]]; then
+      _p=$(rand_port "$_used") || { echo "[错误] 端口分配失败，无法继续"; exit 1; }
+      PORT_SS2022="$_p"; _used+=" $_p "
+    fi
+    [[ -z "${TROJAN_PWD:-}" ]] && TROJAN_PWD=$(openssl rand -hex 16)
+    [[ -z "${SS2022_KEY:-}" ]] && SS2022_KEY=$(openssl rand -base64 16 | tr -d '\n')
+    save_env
   fi
 }
 
@@ -1171,7 +1102,6 @@ do_change_uuid() {
   save_env
   write_config
   setup_service
-  start_argo
   print_links
   echo
   echo "[完成] UUID 已更换，全协议链接已更新"
@@ -1211,174 +1141,33 @@ do_change_cert() {
   echo "[完成] 自签证书已更新（Hy2/TUIC/AnyTLS/VMess-WS 已切换新证书）"
 }
 
-# 启动 Argo 固定隧道
-start_argo_fixed() {
-  local cf="$SB_DIR/cloudflared"
-  if [[ ! -x "$cf" ]]; then
-    echo "[错误] cloudflared 未安装，请先运行一次安装"
-    return 1
-  fi
-  if [[ -z "${ARGO_TOKEN:-}" ]]; then
-    echo "[错误] 未配置 Argo Token"
-    return 1
-  fi
-  systemctl stop "$ARGO_UNIT" >/dev/null 2>&1 || true   # 先停掉可能在跑的旧托管实例，避免双开
-  pkill -f "cloudflared.*tunnel" >/dev/null 2>&1 || true
-  sleep 1
-  echo "[信息] 固定隧道启动中…"
-  if start_argo_systemd "$cf tunnel --no-autoupdate run --token $ARGO_TOKEN"; then
-    echo "[信息] 固定隧道已由 systemd 托管（崩溃自动拉起）"
-  else
-    nohup "$cf" tunnel --no-autoupdate run --token "$ARGO_TOKEN" > "$SB_DIR/argo.log" 2>&1 &
-    if command -v crontab >/dev/null 2>&1; then
-      (crontab -l 2>/dev/null | grep -v "cloudflared.*tunnel"
-       echo "@reboot sleep 15 && $cf tunnel --no-autoupdate run --token $ARGO_TOKEN > $SB_DIR/argo.log 2>&1 &") | crontab - >/dev/null 2>&1 || true
-    fi
-  fi
-  sleep 5
-  echo "[信息] 固定隧道域名：${ARGO_DOMAIN:-（未知）}"
-}
-
-# Argo 期望状态对齐检查：argo.env 声明的模式/令牌（或临时隧道的 VMess 端口）
-# 与现行 Argo 单元 ExecStart（无 systemd 时为 crontab @reboot 行）不一致、
-# 或单元/自启行缺失时返回 0（需要重建），一致返回 1。此前 restart 根本不碰
-# Argo，外部手改 argo.env 后跑多少次 restart 都不会生效，靠它在重启时发现。
-argo_unit_diverged() {
-  local _want _cur=""
-  if [[ -f "$SB_DIR/argo.env" ]] && grep -q '^ARGO_MODE="fixed"' "$SB_DIR/argo.env"; then
-    local _tok
-    _tok=$(grep '^ARGO_TOKEN=' "$SB_DIR/argo.env" 2>/dev/null | cut -d'"' -f2 || true)
-    _want="tunnel --no-autoupdate run --token $_tok"
-  else
-    _want="tunnel --url http://localhost:${PORT_VMESS}"
-  fi
-  if [[ -f "/etc/systemd/system/${ARGO_UNIT}.service" ]]; then
-    _cur=$(grep '^ExecStart=' "/etc/systemd/system/${ARGO_UNIT}.service" 2>/dev/null | sed 's/^ExecStart=//' || true)
-  elif command -v crontab >/dev/null 2>&1; then
-    _cur=$(crontab -l 2>/dev/null | grep '@reboot' | grep "$SB_DIR/cloudflared" || true)
-  fi
-  [[ -n "$_cur" && "$_cur" == *"$_want"* ]] && return 1
-  return 0
-}
-
-# 重启（菜单项 2 与 restart 动作共用）：本体重启后对齐 Argo 期望状态。
-# 配置无分歧时不扰动在跑的隧道——临时隧道一旦重连就会换域名、已分享的
-# 链接随之作废；仅当隧道没在运行时才按现行配置把它拉起来。
+# 重启（菜单项 2 与 restart 动作共用）
 do_restart() {
   load_env_or_exit
   setup_service
-  if argo_unit_diverged; then
-    echo "[信息] 检测到 Argo 配置与运行状态不一致，按 argo.env 重新生成"
-    start_argo
-  elif [[ -d /run/systemd/system ]] || pidof systemd >/dev/null 2>&1; then
-    systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null || start_argo
-  else
-    pgrep -f "$SB_DIR/cloudflared.*tunnel" >/dev/null 2>&1 || start_argo
-  fi
   echo "[完成] 服务已重启"
-}
-
-# 7. Argo 隧道管理子菜单
-do_argo_menu() {
-  load_env_or_exit
-  # 载入 Argo 状态用于显示：固定隧道读 argo.env，临时隧道从日志恢复当前域名
-  if [[ -f "$SB_DIR/argo.env" ]]; then
-    # shellcheck disable=SC1090
-    . "$SB_DIR/argo.env" 2>/dev/null || true
-  elif [[ -z "${ARGO_DOMAIN:-}" ]]; then
-    ARGO_DOMAIN="$(current_argo_domain)"
-  fi
-  while true; do
-    echo
-    echo "---------- Argo 隧道管理 ----------"
-    if [[ "${ARGO_MODE:-}" == "fixed" ]]; then
-      echo "当前模式：固定隧道（${ARGO_DOMAIN:-未知域名}）"
-    else
-      echo "当前模式：临时隧道（${ARGO_DOMAIN:-未建立}）"
-    fi
-    echo "1. 重新抓取隧道域名（隧道在跑但没显示域名时用）"
-    echo "2. 重启临时隧道（获取新域名）"
-    echo "3. 设置固定隧道（需 Cloudflare Token）"
-    echo "4. 切换回临时隧道"
-    echo "0. 返回上级"
-    read -rp "请选择 [0-4]: " c
-    case "$c" in
-      2)
-        rm -f "$SB_DIR/argo.env"
-        unset ARGO_MODE ARGO_TOKEN ARGO_DOMAIN
-        start_argo
-        print_links
-        ;;
-      3)
-        local token domain
-        read -rp "输入 Argo Tunnel Token: " token
-        read -rp "输入固定隧道域名: " domain
-        if [[ -z "$token" || -z "$domain" ]]; then
-          echo "[错误] Token 和域名不能为空"
-          continue
-        fi
-        # 格式白名单校验：argo.env 之后会被 source 加载，含引号/$()/反引号的输入会破坏文件结构甚至被执行
-        if [[ ! "$token" =~ ^[A-Za-z0-9+/=_-]+$ ]]; then
-          echo "[错误] Token 格式不对（应为 Cloudflare 签发的长字符串，只含字母、数字与 +/=_- 等符号）"
-          continue
-        fi
-        if [[ ! "$domain" =~ ^[A-Za-z0-9.-]+$ || "$domain" != *.* || "$domain" == .* || "$domain" == *. ]]; then
-          echo "[错误] 域名格式不对（示例：tun.example.com）"
-          continue
-        fi
-        cat > "$SB_DIR/argo.env" <<EOF
-ARGO_MODE="fixed"
-ARGO_TOKEN="$token"
-ARGO_DOMAIN="$domain"
-EOF
-        chmod 600 "$SB_DIR/argo.env"
-        # shellcheck disable=SC1090
-        . "$SB_DIR/argo.env"
-        start_argo_fixed
-        print_links
-        echo
-        echo "[完成] 已切换到固定隧道：$domain"
-        ;;
-      4)
-        rm -f "$SB_DIR/argo.env"
-        unset ARGO_MODE ARGO_TOKEN ARGO_DOMAIN
-        start_argo
-        print_links
-        ;;
-      1)
-        ARGO_DOMAIN="$(current_argo_domain)"
-        if [[ -n "$ARGO_DOMAIN" ]]; then
-          echo "[信息] 抓到域名：$ARGO_DOMAIN"
-          print_links
-        else
-          echo "[警告] 日志里还没有域名，隧道可能仍在启动中，稍后再试"
-          tail -n 5 "$SB_DIR/argo.log" 2>/dev/null || true
-        fi
-        ;;
-      0) break ;;
-      *) echo "[错误] 无效选择" ;;
-    esac
-  done
 }
 
 # 4. 更换端口
 do_change_ports() {
   load_env_or_exit
-  echo "当前端口：VLESS=$PORT_VLESS VMess-WS=$PORT_VMESS Hy2=$PORT_HY2 TUIC=$PORT_TUIC AnyTLS=$PORT_ANYTLS"
+  echo "当前端口：VLESS=$PORT_VLESS VMess-WS=$PORT_VMESS Hy2=$PORT_HY2 TUIC=$PORT_TUIC AnyTLS=$PORT_ANYTLS Trojan=$PORT_TROJAN SS2022=$PORT_SS2022"
   echo "输入新端口（直接回车保持不变）："
   local p
-  local n_vless="$PORT_VLESS" n_vmess="$PORT_VMESS" n_hy2="$PORT_HY2" n_tuic="$PORT_TUIC" n_anytls="$PORT_ANYTLS"
+  local n_vless="$PORT_VLESS" n_vmess="$PORT_VMESS" n_hy2="$PORT_HY2" n_tuic="$PORT_TUIC" n_anytls="$PORT_ANYTLS" n_trojan="$PORT_TROJAN" n_ss2022="$PORT_SS2022"
   read -rp "VLESS [$PORT_VLESS]: " p; [[ -n "$p" ]] && n_vless="$p"
   read -rp "VMess-WS [$PORT_VMESS]: " p; [[ -n "$p" ]] && n_vmess="$p"
   read -rp "Hysteria2 [$PORT_HY2]: " p; [[ -n "$p" ]] && n_hy2="$p"
   read -rp "TUIC [$PORT_TUIC]: " p; [[ -n "$p" ]] && n_tuic="$p"
   read -rp "AnyTLS [$PORT_ANYTLS]: " p; [[ -n "$p" ]] && n_anytls="$p"
+  read -rp "Trojan [$PORT_TROJAN]: " p; [[ -n "$p" ]] && n_trojan="$p"
+  read -rp "SS2022 [$PORT_SS2022]: " p; [[ -n "$p" ]] && n_ss2022="$p"
   # ---- 写入前校验：全部通过才动 env/配置，坏输入不留半成品 ----
-  local names=("VLESS" "VMess-WS" "Hysteria2" "TUIC" "AnyTLS")
-  local news=("$n_vless" "$n_vmess" "$n_hy2" "$n_tuic" "$n_anytls")
-  local olds=" $PORT_VLESS $PORT_VMESS $PORT_HY2 $PORT_TUIC $PORT_ANYTLS "
+  local names=("VLESS" "VMess-WS" "Hysteria2" "TUIC" "AnyTLS" "Trojan" "SS2022")
+  local news=("$n_vless" "$n_vmess" "$n_hy2" "$n_tuic" "$n_anytls" "$n_trojan" "$n_ss2022")
+  local olds=" $PORT_VLESS $PORT_VMESS $PORT_HY2 $PORT_TUIC $PORT_ANYTLS $PORT_TROJAN $PORT_SS2022 "
   local i j v
-  for i in 0 1 2 3 4; do
+  for i in 0 1 2 3 4 5 6; do
     v="${news[$i]}"
     if ! [[ "$v" =~ ^[0-9]+$ ]] || (( 10#$v < 1 || 10#$v > 65535 )); then
       echo "[错误] ${names[$i]} 端口不合法：'$v'（须为 1-65535 的数字），未做任何修改"
@@ -1386,15 +1175,15 @@ do_change_ports() {
     fi
     news[$i]=$((10#$v))
   done
-  for i in 0 1 2 3 4; do
-    for j in 0 1 2 3 4; do
+  for i in 0 1 2 3 4 5 6; do
+    for j in 0 1 2 3 4 5 6; do
       if (( i < j )) && [[ "${news[$i]}" == "${news[$j]}" ]]; then
         echo "[错误] ${names[$i]} 与 ${names[$j]} 端口重复：${news[$i]}，未做任何修改"
         return 0
       fi
     done
   done
-  for i in 0 1 2 3 4; do
+  for i in 0 1 2 3 4 5 6; do
     v="${news[$i]}"
     # 本服务现有的端口在重启时会被释放，不算占用；其余端口被占则拒绝
     if [[ "$olds" != *" $v "* ]] && port_in_use "$v"; then
@@ -1405,7 +1194,7 @@ do_change_ports() {
   # ---- 备份现状；写完配置用 sing-box 自检，不过则回滚 ----
   cp -f "$ENV_FILE" "$ENV_FILE.bak" 2>/dev/null || true
   [[ -f "$SB_DIR/sb.json" ]] && cp -f "$SB_DIR/sb.json" "$SB_DIR/sb.json.bak" || true
-  PORT_VLESS="${news[0]}"; PORT_VMESS="${news[1]}"; PORT_HY2="${news[2]}"; PORT_TUIC="${news[3]}"; PORT_ANYTLS="${news[4]}"
+  PORT_VLESS="${news[0]}"; PORT_VMESS="${news[1]}"; PORT_HY2="${news[2]}"; PORT_TUIC="${news[3]}"; PORT_ANYTLS="${news[4]}"; PORT_TROJAN="${news[5]}"; PORT_SS2022="${news[6]}"
   save_env
   write_config
   if [[ -x "$SB_DIR/sing-box" ]] && ! "$SB_DIR/sing-box" check -c "$SB_DIR/sb.json" >/dev/null 2>&1; then
@@ -1420,13 +1209,12 @@ do_change_ports() {
   rm -f "$ENV_FILE.bak" "$SB_DIR/sb.json.bak"
   open_firewall
   setup_service
-  start_argo
   print_links
   echo
   echo "[完成] 端口已更新"
 }
 
-# 9. 更新脚本到最新版（从 GitHub 拉取）
+# 8. 更新脚本到最新版（从 GitHub 拉取）
 do_update_script() {
   echo "[信息] 正在从 GitHub 拉取最新脚本…"
   local tmpfile
@@ -1461,13 +1249,6 @@ port_listening() {
 
 # 菜单端口状态
 show_port_status() {
-  local _d argo_st="未开启"
-  if [[ -f "$SB_DIR/argo.env" ]] && grep -q '^ARGO_MODE="fixed"' "$SB_DIR/argo.env" 2>/dev/null; then
-    argo_st="固定隧道：$(grep '^ARGO_DOMAIN=' "$SB_DIR/argo.env" 2>/dev/null | cut -d'"' -f2)"
-  else
-    _d="$(current_argo_domain)"
-    [[ -n "$_d" ]] && argo_st="临时隧道：$_d"
-  fi
   echo "Sing-box节点端口状态如下："
   local item name proto port st
   for item in \
@@ -1475,14 +1256,12 @@ show_port_status() {
     "Vmess-ws|tcp|$PORT_VMESS" \
     "Hysteria-2|udp|$PORT_HY2" \
     "Tuic-v5|udp|$PORT_TUIC" \
-    "Anytls|tcp|$PORT_ANYTLS"; do
+    "Anytls|tcp|$PORT_ANYTLS" \
+    "Trojan|tcp|$PORT_TROJAN" \
+    "SS2022|tcp|$PORT_SS2022"; do
     name="${item%%|*}"; proto="${item#*|}"; proto="${proto%%|*}"; port="${item##*|}"
     if port_listening "$proto" "$port"; then st="监听中"; else st="未监听"; fi
-    if [[ "$name" == "Vmess-ws" ]]; then
-      printf '🚀【 %-13s 】端口:%-5s  状态:%s  Argo:%s\n' "$name" "$port" "$st" "$argo_st"
-    else
-      printf '🚀【 %-13s 】端口:%-5s  状态:%s\n' "$name" "$port" "$st"
-    fi
+    printf '🚀【 %-13s 】端口:%-5s  状态:%s\n' "$name" "$port" "$st"
   done
   if command -v systemctl >/dev/null 2>&1; then
     echo "Sing-box状态：$(systemctl is-active "$UNIT" 2>/dev/null || echo '未知')"
@@ -1503,31 +1282,29 @@ show_menu() {
     echo "1. 查看节点链接"
     echo
     echo "2. 重启 sing-box 服务"
-    echo "3. Argo 隧道管理"
     echo
-    echo "4. 更换 UUID（全协议）"
-    echo "5. 更换端口"
-    echo "6. 更新 Reality 密钥对"
-    echo "7. 更新自签证书"
+    echo "3. 更换 UUID（全协议）"
+    echo "4. 更换端口"
+    echo "5. 更新 Reality 密钥对"
+    echo "6. 更新自签证书"
     echo
-    echo "8. 更新 sing-box 内核到最新版"
-    echo "9. 更新脚本到最新版"
+    echo "7. 更新 sing-box 内核到最新版"
+    echo "8. 更新脚本到最新版"
     echo
-    echo "10. 卸载"
+    echo "9. 卸载"
     echo "0. 退出"
     echo "==================================================="
-    read -rp "请选择 [0-10]: " choice
+    read -rp "请选择 [0-9]: " choice
     case "$choice" in
       1) load_env_or_exit; print_links ;;
       2) do_restart ;;
-      4) do_change_uuid ;;
-      5) do_change_ports ;;
-      6) do_change_reality ;;
-      7) do_change_cert ;;
-      3) do_argo_menu ;;
-      8) detect_arch; if ! do_update_core; then echo "[提示] 内核更新未完成，见上方信息"; fi ;;
-      9) if do_update_script; then exec /usr/local/bin/sbox menu; fi ;;
-      10) do_uninstall; break ;;
+      3) do_change_uuid ;;
+      4) do_change_ports ;;
+      5) do_change_reality ;;
+      6) do_change_cert ;;
+      7) detect_arch; if ! do_update_core; then echo "[提示] 内核更新未完成，见上方信息"; fi ;;
+      8) if do_update_script; then exec /usr/local/bin/sbox menu; fi ;;
+      9) do_uninstall; break ;;
       0) echo "退出"; break ;;
       *) echo "[错误] 无效选择" ;;
     esac
@@ -1555,10 +1332,9 @@ case "$ACTION" in
     open_firewall
     fix_selinux
     setup_service
-    start_argo
     print_links
     echo
-    echo "[完成] 6 种协议已就绪，链接见上 / $LINKS_FILE"
+    echo "[完成] 7 种协议已就绪，链接见上 / $LINKS_FILE"
     ;;
   uninstall)
     do_uninstall
@@ -1574,9 +1350,6 @@ case "$ACTION" in
     ;;
   change-cert)
     do_change_cert
-    ;;
-  change-argo)
-    do_argo_menu
     ;;
   change-ports)
     do_change_ports
@@ -1594,7 +1367,7 @@ case "$ACTION" in
     load_env_or_exit; detect_arch; do_update_core
     ;;
   *)
-    echo "用法：$0 [install|uninstall|menu|change-uuid|change-reality|change-cert|change-argo|change-ports|show-links|restart|update-script|update-core|version]"
+    echo "用法：$0 [install|uninstall|menu|change-uuid|change-reality|change-cert|change-ports|show-links|restart|update-script|update-core|version]"
     exit 1
     ;;
 esac

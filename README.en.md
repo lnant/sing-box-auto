@@ -8,9 +8,9 @@ The sing-box editions all use the official sing-box core and support sing-box's 
 
 ## Editions
 
-| | `sing-box-coexist.sh` (full-featured, "full") | `sing-box-auto.sh` (6-in-1) | `sing-box-vless.sh` (lite) |
+| | `sing-box-coexist.sh` (full-featured, "full") | `sing-box-auto.sh` (7-in-1) | `sing-box-vless.sh` (lite) |
 |---|---|---|---|---|
-| Protocols | Nine inbounds incl. VLESS+WS+TLS domain route, optional Argo tunnel, WARP egress | VLESS+Reality, VMess+WS, VMess+Argo tunnel, Hysteria2, TUIC, AnyTLS | VLESS+Reality only |
+| Protocols | Nine inbounds incl. VLESS+WS+TLS domain route, optional Argo tunnel, WARP egress | VLESS+Reality, VMess+WS, Hysteria2, TUIC, AnyTLS, Trojan, Shadowsocks 2022 | VLESS+Reality only |
 | Core | Official sing-box | Official sing-box | Official sing-box |
 | Best for | Domain route + optional Argo + WARP (most complete) | Multiple fallback routes | A single, simple node |
 | Details | [COEXIST.md](COEXIST.md) | Below | Below |
@@ -21,7 +21,7 @@ instances), for regular servers and restricted environments alike. For
 environments where a one-command installer cannot run (hosting panels
 and the like), see the manual guide in [NODE-AUTO.md](NODE-AUTO.md).
 
-Versions are prefix-tagged on one Releases page: `coexist-v*` (full-featured), `v*` (6-in-1 /
+Versions are prefix-tagged on one Releases page: `coexist-v*` (full-featured), `v*` (7-in-1 /
 lite), `node-v*` (Node edition). Each edition
 self-updates within its own prefix.
 
@@ -33,7 +33,7 @@ Full-featured edition (nine inbounds, domain route, optional Argo, WARP):
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
 ```
 
-6-in-1 edition:
+7-in-1 edition:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-auto.sh | sudo bash
@@ -55,21 +55,20 @@ Requirements (sing-box editions): a Linux server (Debian / Ubuntu / CentOS / Ora
 x86_64 / arm64 / armv7. The Node edition needs neither root nor systemd —
 just POSIX sh, tar and any one download tool (curl / wget / fetch / python3 /
 perl); see [NODE-AUTO.md](NODE-AUTO.md). ≥1 GB RAM recommended (add swap below that). With systemd,
-the service and the Argo tunnel are systemd-managed (auto-restart on crash); without
+the service is systemd-managed (auto-restart on crash); without
 systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
-e.g. `.../sing-box-auto/v1.1.3/sing-box-auto.sh`. Current versions: **v1.1.3** (6-in-1 /
-lite), **coexist-v1.2.0**, **node-v0.2.0**. See the
+e.g. `.../sing-box-auto/v1.2.0/sing-box-auto.sh`. Current versions: **v1.2.0** (7-in-1), **v1.1.3** (lite), **coexist-v1.2.0**, **node-v0.2.0**. See the
 CHANGELOG files and GitHub Releases.
 
-The detailed sections below cover the 6-in-1 and lite editions; see
+The detailed sections below cover the 7-in-1 and lite editions; see
 [COEXIST.md](COEXIST.md) for the full-featured edition and [NODE-AUTO.md](NODE-AUTO.md)
 for the Node edition.
 
 ## After install
 
-- All client links (`vless://`, `vmess://`, `hysteria2://`, `tuic://`, `anytls://`)
+- All client links (`vless://`, `vmess://`, `hysteria2://`, `tuic://`, `anytls://`, `trojan://`, `ss://`)
   are printed in the terminal and saved to **`/root/singbox-links.txt`**.
 - Ports are randomly assigned in **10000–60000** on first install (conflict-free) and
   kept on re-runs (idempotent). UUID / Reality keys / ports live in
@@ -83,16 +82,15 @@ for the Node edition.
   the installer first probes GitHub reachability (GitHub is IPv4-only) and, on
   IPv6-only / broken-IPv4 hosts, bootstraps DNS64 (nat64.net, with backup and
   auto-restore) before downloading; the client side still needs IPv6
-  connectivity, except for the VMess+Argo link,
-  which goes through Cloudflare's tunnel.
+  connectivity.
 
 ## Management
 
-The full edition installs an `sbox` shortcut:
+The 7-in-1 edition installs an `sbox` shortcut:
 
 ```bash
 sbox            # open the management menu
-sbox <action>   # change-uuid | change-reality | change-cert | change-argo
+sbox <action>   # change-uuid | change-reality | change-cert
                 # change-ports | show-links | restart | uninstall
                 # update-script | update-core | version
 ```
@@ -125,7 +123,7 @@ timer (all harmless leftovers; remove manually if you care).
 
 ## Notes
 
-- Do not install the 6-in-1 and lite editions on one machine — they share `/etc/s-box/`.
+- Do not install the 7-in-1 and lite editions on one machine — they share `/etc/s-box/`.
 - Links for self-signed-certificate protocols carry `insecure=1` (certificate
   verification skipped; the UUID is the actual credential). Keep links private.
 - Features common in similar scripts — WARP routing, subscriptions, Telegram
