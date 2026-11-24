@@ -318,9 +318,9 @@ download_core() {
   local ver="$1" tmp
   tmp=$(mktemp -d)
   echo "[信息] 下载定制核心 v${ver}（${ARCH}）…"
-  curl -fSL --retry 2 -o "$tmp/$(core_asset)" \
+  curl -fSL --retry 2 --connect-timeout 10 --speed-limit 10240 --speed-time 30 -o "$tmp/$(core_asset)" \
     "https://github.com/${CORE_REPO}/releases/download/v${ver}/$(core_asset)" || { rm -rf "$tmp"; return 1; }
-  curl -fSL --retry 2 -o "$tmp/SHA256SUMS" \
+  curl -fSL --retry 2 --connect-timeout 10 --speed-limit 10240 --speed-time 30 -o "$tmp/SHA256SUMS" \
     "https://github.com/${CORE_REPO}/releases/download/v${ver}/SHA256SUMS" || { rm -rf "$tmp"; return 1; }
   ( cd "$tmp" && grep " $(core_asset)\$" SHA256SUMS | sha256sum -c - >/dev/null 2>&1 ) \
     || { echo "[错误] 核心 sha256 校验不通过，已放弃"; rm -rf "$tmp"; return 1; }
@@ -391,13 +391,15 @@ is_user_domain() {
 
 # 验解析：灰云下查 $1 的实际解析（走 Cloudflare 的公共 DoH 只读查询，
 # 不需要任何令牌），结果里要有本机地址 $3 才算过。DNS 生效有延迟：
-# 每 5 秒查一次、最长约 1 分钟再下结论。过/不过都只返回状态码，
-# 报错文案与出口选择由调用方（手动域名流程）处理。
+# 每 5 秒查一次、最长约 1 分钟再下结论。判定不过时把最后一次实际
+# 查到的地址打出来（借 233boy 的做法：光说「没有本机地址」分不清
+# 是黄云没关、记录填错还是没生效），报错文案与出口选择由调用方
+# （手动域名流程）处理。
 # 黄云必须关着：开了黄云解析到的是 Cloudflare 的地址，永远对不上。
 verify_domain_dns() {
   local _fqdn="$1" _rtype="$2" _want="$3"
   local _tries="${DNS_VERIFY_TRIES:-12}" _sleep="${DNS_VERIFY_SLEEP:-5}"
-  local _i _resp _got _want_lc
+  local _i _resp _got _want_lc _got_disp
   _want_lc=$(printf '%s' "$_want" | tr 'A-F' 'a-f')
   echo "[信息] 正在验证 $_fqdn 的解析（最长约 1 分钟）…"
   for _i in $(seq 1 "$_tries"); do
@@ -410,6 +412,12 @@ verify_domain_dns() {
     fi
     (( _i < _tries )) && sleep "$_sleep"
   done
+  if [[ -n "$_got" ]]; then
+    _got_disp=$(printf '%s\n' "$_got" | awk 'NF && !seen[$0]++ {printf "%s%s", (n++ ? ", " : ""), $0}')
+    echo "[信息] 实际查到 $_fqdn 的解析：$_got_disp（里面没有本机地址 $_want）"
+  else
+    echo "[信息] 实际查到 $_fqdn 的解析：（没有任何记录）"
+  fi
   return 1
 }
 
@@ -417,26 +425,29 @@ verify_domain_dns() {
 print_record_block() {
   echo
   echo "请去你的域名解析面板加上这一条记录（已经加过就照这个核对一遍）："
-  echo "  类型：$2"
-  echo "  名称：$1"
-  echo "  内容：$3"
-  echo "  代理状态：灰云（仅 DNS）——不要开黄云！开了黄云解析到的是服务商的地址，验证过不了"
-  echo "  TTL：自动"
+  echo "  类型 Type：$2"
+  echo "  名称 Name：$1"
+  echo "  内容 Content：$3"
+  echo "  代理状态 Proxy status：关（DNS only／仅限 DNS）——不要开黄云！开了黄云解析到的是 Cloudflare 的地址，验证过不了"
+  echo "  TTL：自动（Auto）"
 }
 
 # 自己的域名流程（安装与菜单「改域名」共用）：一个输入提示、每轮
 # 20 秒窗口。第一轮直接回车或超时不输入 = 不用域名（返回 1，不算
 # 错误）；输入了域名就打印应加的记录、随即验解析（轮询约 1 分钟，
 # 给传播和去面板补加记录留时间），对上就定下来（TLS_DOMAIN=该域名、
-# 证书自签且 SAN 带它，返回 0）。判定不过、或重试轮里回车/超时没
-# 输入，记 1 次错误：提示必须带「未解析正确域名」与「不要开黄云」
-# 两句、重打应加的记录，再回到输入提示。满 3 次错误返回 1 并置
+# 证书自签且 SAN 带它，返回 0）。判定不过后进入重试轮：回车 =
+# 复查当前域名（不用重输，借 233boy 的节奏）、输入新域名 = 换域名
+# 再查；复查或换域名仍不过、或重试轮 20 秒超时没输入，都记 1 次
+# 错误：提示必须带「未解析正确域名」与「不要开黄云」两句、重打
+# 应加的记录，再回到输入提示。满 3 次错误返回 1 并置
 # DOMAIN_GAVE_UP=1（调用方据此回落临时域名继续，不退出安装）。
 # 格式不对只警告重输、不计次。全程不要令牌，脚本不碰解析后台。
 # 返回 0=已定下用户域名；1=没定（放弃或三次用完）。无可用公网 IP
 # 时没法验解析，直接返回 1。
 prompt_user_domain() {
   DOMAIN_GAVE_UP=0
+  PROMPT_DOMAIN_SET=0
   local _ip _bare _rtype
   _ip="$(get_ip)"
   _bare="${_ip#[}"; _bare="${_ip%]}"   # 归一化：裸地址
@@ -455,27 +466,50 @@ prompt_user_domain() {
   while true; do
     _ans=""; _rc=0
     if (( _attempted == 0 && _errors == 0 )); then
+      # 第一轮：回车或超时不输入 = 不用域名，不算错误
       read -t "$_timeout" -rp "要用自己的域名就输入完整子域名（如 a.example.com）；直接回车或 ${_timeout} 秒不输入 = 不用域名： " _ans || _rc=$?
-    else
-      read -t "$_timeout" -rp "重新输入子域名再查（回车或 ${_timeout} 秒不输入也算一次，已错 ${_errors}/3 次）： " _ans || _rc=$?
-    fi
-    _ans=$(printf '%s' "$_ans" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
-    if [[ -z "$_ans" ]]; then
-      if (( _attempted == 0 && _errors == 0 )); then
-        # 第一轮放弃：不用域名，不算错误
+      _ans=$(printf '%s' "$_ans" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+      if [[ -z "$_ans" ]]; then
         echo "[信息] 不用自己的域名"
         return 1
       fi
-      # 重试轮里没输入（回车或超时）：和判定不过一样记 1 次错误
-      _errors=$((_errors+1))
-      echo "[错误] 未解析正确域名：这一轮没有输入域名，也算一次（已错 ${_errors}/3 次）。"
-      echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
-      print_record_block "$_fqdn" "$_rtype" "$_bare"
-      if (( _errors >= 3 )); then
-        DOMAIN_GAVE_UP=1
-        return 1
+    else
+      # 重试轮：回车 = 复查当前域名（不用重输）；输入新域名 = 换域名再查；超时没输入算一次错
+      read -t "$_timeout" -rp "回车 = 复查当前域名 ${_fqdn}，输入新域名 = 换域名再查（${_timeout} 秒不输入算一次错，已错 ${_errors}/3 次）： " _ans || _rc=$?
+      _ans=$(printf '%s' "$_ans" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+      if (( _rc > 128 )); then
+        # 超时没输入：和判定不过一样记 1 次错误（不复查）
+        _errors=$((_errors+1))
+        echo "[错误] 未解析正确域名：${_timeout} 秒没有输入，也算一次（已错 ${_errors}/3 次）。"
+        echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
+        print_record_block "$_fqdn" "$_rtype" "$_bare"
+        if (( _errors >= 3 )); then
+          DOMAIN_GAVE_UP=1
+          return 1
+        fi
+        continue
       fi
-      continue
+      if [[ -z "$_ans" ]]; then
+        # 回车：直接对当前域名再验一遍（仍走带超时的 verify_domain_dns）
+        if verify_domain_dns "$_fqdn" "$_rtype" "$_bare"; then
+          TLS_DOMAIN="$_fqdn"
+          TLS_DOMAIN_AUTO=0
+          PROMPT_DOMAIN_SET=1
+          DOMAIN_ORANGE_NOTE="备注：域名 $_fqdn 这条记录现在是灰云（仅解析）。装完了，你可以去面板把它的黄云（橙色云代理）打开；注意 SSL 模式选「完全」，不要选「完全（严格）」——源站是自签证书，严格模式会报错。链接不用换。"
+          echo "[信息] TLS 域名已定：$TLS_DOMAIN（自签证书，SAN 带该域名）"
+          return 0
+        fi
+        _errors=$((_errors+1))
+        echo "[错误] $_fqdn 未解析正确域名：复查了一遍仍没通过（已错 ${_errors}/3 次）。"
+        echo "提醒：不要开黄云——开了黄云，解析到的就是 Cloudflare 的地址，和本机 IP 对不上，验证过不了；保持灰云即可，装完后照结尾提示去面板打开。"
+        echo "其他可能原因：记录内容填错了（要填本机 IP $_bare）、或解析还没生效（刚加的记录）。"
+        print_record_block "$_fqdn" "$_rtype" "$_bare"
+        if (( _errors >= 3 )); then
+          DOMAIN_GAVE_UP=1
+          return 1
+        fi
+        continue
+      fi
     fi
     if ! [[ "$_ans" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
       echo "[警告] 域名格式不对（要完整子域名、至少带一个点），重输一次（不计次）"
@@ -488,6 +522,7 @@ prompt_user_domain() {
     if verify_domain_dns "$_fqdn" "$_rtype" "$_bare"; then
       TLS_DOMAIN="$_fqdn"
       TLS_DOMAIN_AUTO=0
+      PROMPT_DOMAIN_SET=1
       DOMAIN_ORANGE_NOTE="备注：域名 $_fqdn 这条记录现在是灰云（仅解析）。装完了，你可以去面板把它的黄云（橙色云代理）打开；注意 SSL 模式选「完全」，不要选「完全（严格）」——源站是自签证书，严格模式会报错。链接不用换。"
       echo "[信息] TLS 域名已定：$TLS_DOMAIN（自签证书，SAN 带该域名）"
       return 0
@@ -534,10 +569,43 @@ do_change_domain() {
   # 证书 SAN 里是旧域名，删掉重签才带新域名
   rm -f "$SB_DIR/cert.pem" "$SB_DIR/private.key"
   gen_certs
+  # 新域名刚验完解析：顺手试签真证书（意向先行，服务起来后验证步把关）
+  TLS_CERT_MODE="self"; TLS_ACME_CHALLENGE=""
+  ensure_vtls_cert 1
+  save_env
   write_config
   restart_service
+  acme_verify_or_fallback || true
   print_links
   [[ -n "${DOMAIN_ORANGE_NOTE:-}" ]] && echo "$DOMAIN_ORANGE_NOTE"
+}
+
+# 菜单「更新证书」：有自有域名先试 ACME 真证书（ensure 定意向、写
+# 配置重启、验证步把关），签成最好；签不成、或本来就是临时域名，
+# 就重签自签证书（原「更新自签证书」的行为）。env 已由菜单载入。
+do_update_cert() {
+  if is_user_domain; then
+    echo "[信息] 为 $TLS_DOMAIN 更新证书：先试 Let's Encrypt 真证书…"
+    TLS_CERT_MODE="self"; TLS_ACME_CHALLENGE=""
+    ensure_vtls_cert 1
+    if [[ "${TLS_CERT_MODE:-self}" == "acme" ]]; then
+      write_config
+      restart_service
+      if acme_verify_or_fallback; then
+        print_links
+        echo "[完成] 已换上 Let's Encrypt 真证书（核心自动续期，链接已去掉允许不安全）"
+        return 0
+      fi
+      # 验证步已回落自签并重写配置重启；下面再把自签本身换新一张
+    fi
+  fi
+  rm -f "$SB_DIR/cert.pem" "$SB_DIR/private.key" "$SB_DIR/hy2-cert.pem" "$SB_DIR/hy2-key.pem"
+  gen_hy2_cert; gen_certs; write_config; restart_service
+  if is_user_domain; then
+    echo "[完成] 自签证书已更新（真证书这次没签成，放行 80/443 后再来这里重试即可）"
+  else
+    echo "[完成] 自签证书已更新（域名与链接不变）"
+  fi
 }
 
 # 公网 IP 探测不到时让装机人手填（仅交互安装）：挂在 load_or_gen_identity
@@ -670,6 +738,8 @@ NAIVE_USER="$NAIVE_USER"
 NAIVE_PASS="$NAIVE_PASS"
 TLS_DOMAIN="${TLS_DOMAIN:-}"
 TLS_DOMAIN_AUTO="${TLS_DOMAIN_AUTO:-1}"
+TLS_CERT_MODE="${TLS_CERT_MODE:-self}"
+TLS_ACME_CHALLENGE="${TLS_ACME_CHALLENGE:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
 EOF
   chmod 600 "$ENV_FILE"
@@ -827,14 +897,201 @@ EOF
   echo "[信息] 自签证书生成成功"
 }
 
+#----------------------------- 6.5 VTLS 真证书（核心内置 ACME） ----------------
+# 自有域名验完解析后顺手试签 Let's Encrypt 真证书：用核心（NantCore /
+# sing-box 1.14）内置的 ACME（certificate provider 形态，证书与账户
+# 存在 $SB_DIR/acme 下、按域名分目录，核心后台自动续期），脚本只做
+# 三件事：按本机情况排验证方式、服务起来后限时验呈现的证书是不是
+# 公网受信任的真证书、不行就回落自签。不要令牌、不问邮箱（核心以
+# 空 contact 建账户，实测可签）。失败不许卡死安装：进程在签发失败
+# 时照常运行（实测），脚本这边也有界等待 + 回落兜底。
+# 注意：cert.pem 是 TUIC/AnyTLS/Trojan/Naive/VTLS 五家共用的自签，
+# 真证书只给 VTLS 一家用（provider 独立存储），互不影响。
+
+# 仓里已签下的证书路径：$1=域名，命中回显路径
+acme_stored_cert() {
+  local _f
+  for _f in "$SB_DIR/acme/certificates"/*/"$1/$1.crt"; do
+    [[ -f "$_f" ]] && { printf '%s' "$_f"; return 0; }
+  done
+  return 1
+}
+
+# 验证方式判定（输出空格分隔的尝试顺序，空 = 一条都走不通）：
+# HTTP-01 要 80 空闲（核心临时在 80 应答）；TLS-ALPN-01 在 VTLS 就
+# 是 443 时借它自己的监听应答（最稳），VTLS 不在 443 时核心要自己
+# 占 443 应答、需 443 空闲。排序：VTLS=443 先 ALPN 后 HTTP（443 是
+# 这条链必须放行的口子）；VTLS≠443 先 HTTP 后 ALPN（80 最常放行，
+# 且日后用户开黄云时 HTTP 还能续期，ALPN 只作 443 空闲时的兜底）。
+# 80 被已有网站占用绝不抢占——port_in_use 判到占用就整条跳过。
+acme_challenge_plan() {
+  local _http=0 _alpn=0 _plan=""
+  port_in_use 80 || _http=1
+  if [[ "${PORT_VTLS:-}" == "443" ]] || ! port_in_use 443; then _alpn=1; fi
+  if [[ "${PORT_VTLS:-}" == "443" ]]; then
+    (( _alpn == 1 )) && _plan="$_plan tls-alpn-01"
+    (( _http == 1 )) && _plan="$_plan http-01"
+  else
+    (( _http == 1 )) && _plan="$_plan http-01"
+    (( _alpn == 1 )) && _plan="$_plan tls-alpn-01"
+  fi
+  printf '%s' "${_plan# }"
+}
+
+# 给 HTTP-01 在本地防火墙开 80/tcp（与 open_firewall 同三套机制）。
+# 规则留着不撤：核心续期时还要在 80 应答，撤了续期必挂。
+acme_open_port80() {
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+    firewall-cmd --permanent --add-port="80/tcp" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+  fi
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow "80/tcp" >/dev/null 2>&1 || true
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null \
+      || iptables -I INPUT 1 -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+  fi
+  if command -v ip6tables >/dev/null 2>&1; then
+    ip6tables -C INPUT -p tcp --dport 80 -j ACCEPT 2>/dev/null \
+      || ip6tables -I INPUT 1 -p tcp --dport 80 -j ACCEPT 2>/dev/null || true
+  fi
+}
+
+# 证书模式决策（写配置前调用）：$1=1 才真去试签（域名刚在交互里定
+# 下、或菜单里明确选了更新证书/改域名时）；不试签时只维护既有状态
+# ——已是 acme 就保持 acme（仓里有证书核心直接用，没有核心起来后
+# 自己补签，验证步把关），其余照旧自签。试签也只定「意向」：配置
+# 先按 acme 写，服务起来后由 acme_verify_or_fallback 验真伪。
+ensure_vtls_cert() {
+  local _attempt="${1:-0}"
+  ACME_CHALLENGES=""
+  if ! is_user_domain; then
+    TLS_CERT_MODE="self"; TLS_ACME_CHALLENGE=""
+    return 0
+  fi
+  local _crt
+  if [[ "${TLS_CERT_MODE:-self}" == "acme" ]] && _crt=$(acme_stored_cert "$TLS_DOMAIN") \
+     && openssl x509 -checkend 2592000 -noout -in "$_crt" >/dev/null 2>&1; then
+    echo "[信息] 已有 Let's Encrypt 真证书（$TLS_DOMAIN，到期还远，核心自动续期），继续使用"
+    return 0
+  fi
+  if [[ "$_attempt" != "1" ]]; then
+    if [[ "${TLS_CERT_MODE:-self}" == "acme" ]]; then
+      # 重跑不主动试签，但已是 acme 的把尝试顺序备好，验证步可换方式兜底
+      ACME_CHALLENGES=$(acme_challenge_plan)
+      TLS_ACME_CHALLENGE="${ACME_CHALLENGES%% *}"
+    else
+      TLS_CERT_MODE="self"; TLS_ACME_CHALLENGE=""
+    fi
+    return 0
+  fi
+  ACME_CHALLENGES=$(acme_challenge_plan)
+  if [[ -z "$ACME_CHALLENGES" ]]; then
+    TLS_CERT_MODE="self"; TLS_ACME_CHALLENGE=""
+    echo "[警告] 80 与 443 都被占用，这次没法试签真证书：域名链先用自签证书（运行 sbn 选「更新证书」可重试）"
+    return 0
+  fi
+  TLS_CERT_MODE="acme"
+  TLS_ACME_CHALLENGE="${ACME_CHALLENGES%% *}"
+  # 80 只在真轮到 HTTP-01 时才开（ALPN 先成就不多开一个口子）
+  [[ "$TLS_ACME_CHALLENGE" == "http-01" ]] && acme_open_port80
+  echo "[信息] $TLS_DOMAIN 解析已验通，顺手试签 Let's Encrypt 真证书（核心内置 ACME，先试 $TLS_ACME_CHALLENGE，签发最长约 3 分钟，不要关闭终端）…"
+  echo "       签不成会自动回落自签证书，安装照常完成。"
+}
+
+# VTLS 当前呈现的证书是不是公网受信任的（链校验 + 域名匹配都过）。
+# staging 证书与自签都过不了系统信任校验，天然被挡下。
+vtls_cert_trusted() {
+  local _out
+  _out=$(echo | openssl s_client -connect "127.0.0.1:${PORT_VTLS}" -servername "$TLS_DOMAIN" \
+    -verify_hostname "$TLS_DOMAIN" 2>/dev/null || true)
+  if [[ -z "$_out" ]]; then
+    # 老版 openssl 的 s_client 没有 -verify_hostname：退回只验链
+    _out=$(echo | openssl s_client -connect "127.0.0.1:${PORT_VTLS}" -servername "$TLS_DOMAIN" 2>/dev/null || true)
+  fi
+  printf '%s' "$_out" | grep -q "Verify return code: 0"
+}
+
+# 以真实客户端姿势验域名链：不跳过证书校验地做一次 WS 握手（curl
+# 会带 ALPN 并验信任链），101 才算真能用。只验 s_client 的信任链会
+# 假通过——ALPN 协商坏了时 s_client 照样过、真实客户端全灭（实测）。
+vtls_real_handshake() {
+  local _code
+  _code=$(curl -s --max-time 8 --resolve "${TLS_DOMAIN}:${PORT_VTLS}:127.0.0.1" \
+    "https://${TLS_DOMAIN}:${PORT_VTLS}/${UUID}-vt" \
+    -H "Connection: Upgrade" -H "Upgrade: websocket" \
+    -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: x3JJHMbDL1EzLkh9GBhXDw==" \
+    -o /dev/null -w '%{http_code}' 2>/dev/null || true)
+  [[ "$_code" == "101" ]]
+}
+
+# 服务起来后的把关（acme 意向时调用）：每 5 秒验一次（呈现证书受
+# 信任 + 真实 WS 握手能通），约 75 秒没等到就换下一种验证方式重
+# 写配置重启再验；全不行回落自签（重写配置 + 重启 + 提示菜单「更
+# 新证书」可重试）。成功与回落都会 save_env 落定模式。返回 0=真
+# 证书生效，1=已回落自签。
+acme_verify_or_fallback() {
+  [[ "${TLS_CERT_MODE:-self}" == "acme" ]] || return 0
+  local _tries="${ACME_VERIFY_TRIES:-15}" _i _rest
+  while true; do
+    for _i in $(seq 1 "$_tries"); do
+      if vtls_cert_trusted && vtls_real_handshake; then
+        echo "[信息] Let's Encrypt 真证书已生效（$TLS_DOMAIN，核心自动续期）"
+        DOMAIN_ORANGE_NOTE="备注：域名 $TLS_DOMAIN 用的是 Let's Encrypt 真证书（核心自动续期），VTLS 链接已去掉「允许不安全」。现在可以去面板把这条记录的黄云打开，SSL 模式选「完全（严格）」即可；链接不用换。"
+        save_env
+        return 0
+      fi
+      sleep 5
+    done
+    _rest="${ACME_CHALLENGES#* }"
+    if [[ -n "$_rest" && "$_rest" != "$ACME_CHALLENGES" ]]; then
+      ACME_CHALLENGES="$_rest"
+      TLS_ACME_CHALLENGE="${_rest%% *}"
+      echo "[警告] 真证书还没签下来，换 $TLS_ACME_CHALLENGE 方式再试一轮（最长约 1 分钟）…"
+      [[ "$TLS_ACME_CHALLENGE" == "http-01" ]] && acme_open_port80
+      write_config
+      restart_service
+      continue
+    fi
+    break
+  done
+  echo "[警告] 真证书这次没签成（多半是 80/443 公网进不来或被占用），域名链回落自签证书，安装照常完成；放行端口后运行 sbn 选「更新证书」可重试。"
+  TLS_CERT_MODE="self"
+  TLS_ACME_CHALLENGE=""
+  ACME_CHALLENGES=""
+  DOMAIN_ORANGE_NOTE="备注：域名 $TLS_DOMAIN 这条记录现在是灰云（仅解析）。装完了，你可以去面板把它的黄云（橙色云代理）打开；注意 SSL 模式选「完全」，不要选「完全（严格）」——源站是自签证书，严格模式会报错。链接不用换。真证书这次没签成，放行 80/443 后运行 sbn 选「更新证书」可重试。"
+  save_env
+  write_config
+  restart_service
+  return 1
+}
+
 #----------------------------- 7. 写配置 --------------------------------------
 write_config() {
   echo "[信息] 写入 sing-box 配置（九个入站）…"
-  # 域名 TLS 入站的 tls 段只有一种形态：本地自签证书（与七合一 VTLS
-  # 口径对齐）。不要令牌后 ACME（含 direct）已全删：真证书无从自动化，
-  # 客户端连域名链统一允许不安全证书，链接里带 allowInsecure
-  local _tls_sni="${TLS_DOMAIN:-$SNI_SELF}" vtls_tls
-  vtls_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"certificate_path\": \"$SB_DIR/cert.pem\", \"key_path\": \"$SB_DIR/private.key\""
+  # 域名 TLS 入站的 tls 段两种形态：默认本地自签证书（与七合一 VTLS
+  # 口径对齐，链接带 allowInsecure）；自有域名且 ACME 意向成立时改走
+  # 核心内置 ACME 真证书（certificate provider，见 6.5 节）——意向只
+  # 是先按 acme 写配置，服务起来后验证步验到真证书才算数，验不到
+  # 回落自签重写。其余入站始终用共用自签 cert.pem，不受影响。
+  local _tls_sni="${TLS_DOMAIN:-$SNI_SELF}" vtls_tls _acme_json=""
+  if [[ "${TLS_CERT_MODE:-self}" == "acme" ]] && is_user_domain; then
+    local _dis_http=false _dis_alpn=false
+    case "${TLS_ACME_CHALLENGE:-}" in
+      http-01) _dis_alpn=true ;;
+      tls-alpn-01) _dis_http=true ;;
+    esac
+    _acme_json="  \"certificate_providers\": [{\"type\": \"acme\", \"tag\": \"acme-vtls\", \"domain\": [\"$_tls_sni\"], \"data_directory\": \"$SB_DIR/acme\", \"disable_http_challenge\": $_dis_http, \"disable_tls_alpn_challenge\": $_dis_alpn}],
+"
+    # alpn 必须显式写 http/1.1：provider 模式下核心的 TLS 配置不带
+    # 它时，带 ALPN 的客户端（curl / 多数 sing-box 客户端）会被服务器
+    # 以 no_application_protocol 告警直接拒绝（USARM 实测定位）；
+    # 文件证书模式没这毛病，故只在 acme 分支加
+    vtls_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"alpn\": [\"http/1.1\"], \"certificate_provider\": \"acme-vtls\""
+  else
+    vtls_tls="\"enabled\": true, \"server_name\": \"$_tls_sni\", \"certificate_path\": \"$SB_DIR/cert.pem\", \"key_path\": \"$SB_DIR/private.key\""
+  fi
   # WARP 出站：状态在 warp.env（菜单 WARP 出站管理）；关闭或注册参数不全时
   # 不生成任何 WARP 配置（零成本），换端口/身份/域名等重写配置时原样保留
   load_warp_env
@@ -971,7 +1228,7 @@ write_config() {
       "tls": { $vtls_tls }
     }
   ],
-  "outbounds": [{"type": "direct", "tag": "direct"}]${_warp_tail}
+${_acme_json}  "outbounds": [{"type": "direct", "tag": "direct"}]${_warp_tail}
 }
 EOF
   chmod 600 "$SB_DIR/sb.json"   # 内含 Reality 私钥等凭据，按密钥文件对待
@@ -1222,10 +1479,10 @@ do_update_script() {
 }
 
 #----------------------------- 9.5 域名链本地握手自检 ------------------------------
-# 证书统一自签、本地生成，没有 ACME 等待步；装完只在本机经 127.0.0.1
-# 对域名链做一次 WS 握手（-k 跳过自签校验），确认服务真的在目标端口
-# 按预期应答。过不了只警告、不回滚——配置和链接照常落地，修好后
-# sbn 里重看链接即可。
+# 装完在本机经 127.0.0.1 对域名链做一次 WS 握手（-k 不验链，自签与
+# ACME 真证书都适用；真证书的信任校验在 acme_verify_or_fallback 里
+# 单独做），确认服务真的在目标端口按预期应答。过不了只警告、不回
+# 滚——配置和链接照常落地，修好后 sbn 里重看链接即可。
 vtls_local_check() {
   [[ -n "${TLS_DOMAIN:-}" && -n "${PORT_VTLS:-}" && -n "${UUID:-}" ]] || return 0
   local _i _code
@@ -1698,6 +1955,8 @@ print_links() {
   # 域名链：地址就用域名本身（用户自己的域名或临时域名都直连源站；
   # 用户装完去面板开了黄云后，同一条链接经 CF 回源照样能用，不用换）
   local _vt_host="${TLS_DOMAIN:-$SNI_SELF}" _vt_addr="${TLS_DOMAIN:-$ip}" _vt_ins="&allowInsecure=1"
+  # 真证书生效时链接不用再允许不安全证书
+  if [[ "${TLS_CERT_MODE:-self}" == "acme" ]] && is_user_domain; then _vt_ins=""; fi
   vt_link="vless://${UUID}@${_vt_addr}:${PORT_VTLS:-443}?encryption=none&security=tls&sni=${_vt_host}&fp=chrome&type=ws&host=${_vt_host}&path=${UUID}-vt${_vt_ins}#nant-vtls-${host}"
   {
     echo "================ sing-box-nant 节点链接 ================"
@@ -1734,7 +1993,11 @@ print_links() {
     echo
     echo "VLESS + WS + TLS（域名：${TLS_DOMAIN:-未设置}，TCP/${PORT_VTLS:-443}）"
     if is_user_domain; then
-      echo "（自己的域名 + 自签证书）"
+      if [[ "${TLS_CERT_MODE:-self}" == "acme" ]]; then
+        echo "（自己的域名 + Let's Encrypt 真证书）"
+      else
+        echo "（自己的域名 + 自签证书）"
+      fi
     elif [[ "${TLS_DOMAIN_AUTO:-1}" == "1" ]]; then
       echo "（临时域名 + 自签证书，自签直连）"
     else
@@ -1799,7 +2062,7 @@ do_menu() {
     echo " 4) WARP 出站（开关/模式）"
     echo " 5) 更换端口（全部端口重新随机）"
     echo " 6) 重置身份（UUID/密钥/密码全换，旧链接失效）"
-    echo " 7) 更新自签证书"
+    echo " 7) 更新证书（自有域名先试真证书）"
     echo " 8) 更新核心"
     echo " 9) 更新脚本"
     echo " 10) 卸载"
@@ -1843,9 +2106,7 @@ do_menu() {
         ;;
       7)
         . "$ENV_FILE"
-        rm -f "$SB_DIR/cert.pem" "$SB_DIR/private.key" "$SB_DIR/hy2-cert.pem" "$SB_DIR/hy2-key.pem"
-        gen_hy2_cert; gen_certs; write_config; restart_service
-        echo "[完成] 自签证书已更新（域名与链接不变）"
+        do_update_cert
         ;;
       8) detect_arch; do_update_core ;;
       9) if do_update_script; then exec "$SB_DIR/sing-box-nant.sh" menu; fi ;;
@@ -1876,10 +2137,12 @@ main() {
       warp_install_setup
       gen_hy2_cert
       gen_certs
+      ensure_vtls_cert "${PROMPT_DOMAIN_SET:-0}"
       write_config
       open_firewall
       fix_selinux
       setup_service
+      acme_verify_or_fallback || true
       vtls_local_check
       setup_shortcut
       print_links
