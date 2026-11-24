@@ -7,6 +7,9 @@
 # 给一个口只起一个实例；给两个口则 TLS、明文各起一个实例。
 # 2. 出站能访问 nodejs.org 与 registry.npmjs.org
 # （脚本要自己下载 Node 运行时与 ws 依赖，机器上不需要预装 Node）。
+#    例外是 FreeBSD：Node 官方不发布 FreeBSD 二进制包，系统里有
+#    Node 18 以上（pkg / ports 装的即可）时直接用系统的、不下载；
+#    没有系统 Node 时可用 --node-tarball 喂入本地包。
 # 3. 不需要 root、不需要 systemd；只需要 POSIX sh、tar，
 # 以及 curl / wget / fetch / python3 / perl(LWP) 任意一种下载工具。
 # 有 systemd 且以 root 运行时，可选由 systemd 单元保活（见 --keepalive）。
@@ -16,16 +19,35 @@
 # sh node-auto.sh --tls-port 31456 --plain-port 25350 --domain example.com
 # 环境变量同义：NA_TLS_PORT / NA_PLAIN_PORT / NA_DOMAIN / NA_IP / NA_UUID / NA_DIR
 # --tls-port 与 --plain-port 任选其一即只起一个实例。
-# 域名可留空：缺省用本机网卡地址出链接；填了域名会先校验其解析是否
-# 指向本机，指不对就回落到裸 IP 出链接，不中断安装。重跑可改域名：
-# 只重签证书并重出链接，UUID 与端口读回旧值不变。公网 IP 不落在网卡上
-# 且元数据也问不到的机器：能自动获得的地址（网卡／元数据／已存配置）
-# 直接参与校验、不用问。交互安装里域名与公网 IP 是两道分开的判断：
-# 域名查不到解析算不正确，要求重新输入，错误 3 次就不用域名、默认
-# 用本机地址出链接继续装（域名后期可改）；域名解析到了、只是自动
-# 确认不了是不是本机时，才要求手动输入本机公网 IP（提示会说清脚本
-# 自动获取不到、需要手动输入），输错一直重问，错误 3 次直接报错、
-# 退出安装。非交互时用 --ip 手填再配域名。
+# 域名可留空：缺省用本机地址出链接；填了域名会先校验它的解析是否
+# 指向本机，验过才用域名出链接、证书也签给它，指不对就回落到裸 IP
+# 出链接，不中断安装。重跑可改域名：只重签证书并重出链接，UUID 与
+# 端口读回旧值不变。校验的顺序是「能直接获得的，就直接过」：网卡
+# 地址、机器自身元数据服务给出的公网地址、--ip 手填或配置里存过的
+# 公网地址，任一路命中就用域名，不多问一句；全程只比对本机地址
+# 集合，不经任何代理、不问任何第三方站点。
+# 交互安装时域名与公网 IP 是前后两道判断，每轮输入都限时 20 秒：
+# 第一道是域名——不输入（回车或超时）就跳过、不用域名，不算错；
+# 输入了，脚本先把要加的解析记录原样打印出来（记录由装机人自己去
+# 面板加，脚本不碰任何解析后台、不要任何令牌），再轮询约 1 分钟
+# 等解析生效。验不过会把实际查到的解析打出来、提醒不要开黄云，
+# 并计 1 次错；接下来直接回车就是复查同一个域名（不用重输），
+# 输入新域名就是换一个再查，超时没输入也计 1 次错；格式不对只
+# 提醒重输、不计次。满 3 次错就不用域名、用本机地址出链接把安装
+# 走完（域名以后能改：菜单 2 或带 --domain 重跑）。
+# 第二道是公网 IP——只有域名解析到了、只是脚本自动确认不了它是不
+# 是本机（公网 IP 不落在网卡上、元数据也问不到）时才出现：提示会
+# 说清为什么要手填、去哪里看这个 IP，填进来重新比对，命中就用
+# 域名。空填、格式不对、与解析对不上、超时都算失败，满 3 次直接
+# 报错、退出安装；填对的 IP 会存进配置，重跑不再问。
+# 非交互（带齐参数一条命令跑完）两道都不问：参数给的域名照样验，
+# 验不过或确认不了就回落裸 IP 出链接装完，并提示用 --ip 指定。
+# 回落的裸 IP 也只认公网地址：自动探测认不到公网 IP 时，交互下当场
+# 请装机人手填（空／超时／输错都计次，满 3 次退出），非交互直接
+# 报错退出、写明加 --ip 重跑——不拿内网地址顶上。
+# 探测到的地址若落在 100.64.0.0/10（运营商级 NAT）这类断不准公私
+# 的段，脚本不硬判：交互下请装机人输入确认（必须是服务器的公网
+# IP，与探测到的完全一致就按其确认是公网接受），非交互报错退出。
 # 默认直接安装（以运行脚本的身份装）：非 root 时自动选口会跳过绑不了
 # 的特权口。只有你明确指定了特权口、或非 root 指定 systemd 保活这类
 # 直接装办不到的事，脚本才会先提示、再经 sudo 以 root 身份继续（不
@@ -40,7 +62,8 @@
 # 卸载：sh node-auto.sh --uninstall [--dir 目录]，或运行安装目录里的 uninstall.sh
 #
 # 安装目录结构（默认./node-auto）：
-# node/ 脚本自拉的 Node v22 运行时
+# node/ 脚本自拉的 Node v22 运行时（FreeBSD 用系统 Node 时不生成此目录，
+# 实际来源与路径记在 config.env 的 NODE_SOURCE / NODE_BIN）
 # app/ app.js + game.html + node_modules(ws)
 # tools/ 自签证书生成器（selfsigned，纯 JS）与解析校验小工具
 # cert.pem key.pem 自签证书（TLS 实例用）
@@ -58,6 +81,39 @@ err() { printf '%s\n' "$*" >&2;}
 die() { err "错误：$*"; exit 1;}
 have() { command -v "$1" >/dev/null 2>&1;}
 
+# ---------- 限时输入（域名／公网 IP 两处提问共用） ----------
+# 每轮输入限时 NA_PROMPT_TIMEOUT 秒（缺省 20）：装机人走开、或记录还没
+# 加好时，安装不会永远卡在一句提问上；超时和空填、填错一样计次。
+# 本脚本是 POSIX sh，而 read -t 不是 POSIX 功能（dash 不支持），所以先
+# 探测当前 shell 的 read 支不支持 -t：支持就限时，不支持就退化成普通
+# read（不会超时，其余的计数、复查口径不变）。
+NA_PROMPT_TIMEOUT=${NA_PROMPT_TIMEOUT:-20}
+NA_READ_T=0
+( read -t 0 _na_probe </dev/null ) 2>/dev/null
+[ $? != 2 ] && NA_READ_T=1
+na_read_timed() { # $1=限时秒数；读到的内容放在 NA_IN；返回 0=读到 1=没读到(EOF) 2=超时
+  NA_IN=''
+  if [ "$NA_READ_T" = "1" ]; then
+    read -t "$1" -r NA_IN
+    _na_rc=$?
+    if [ "$_na_rc" = "0" ]; then return 0; fi
+    if [ "$_na_rc" -gt 128 ]; then return 2; fi # 超时：返回码大于 128（注意要在 read 之后立刻取，隔了 if 就被冲掉）
+    return 1
+  fi
+  if read -r NA_IN; then return 0; fi
+  return 1
+}
+valid_domain() { # $1=已去空白、转小写的候选域名：粗校验格式（至少带一个点、只用合法字符、点与横杠不落在怪位置）
+  case "$1" in
+    *.*) ;;
+    *) return 1;;
+  esac
+  case "$1" in
+    [!a-z0-9.-]*|.*|*.|*..*|-*|*-|*.-*|*-.*) return 1;;
+  esac
+  return 0
+}
+
 usage() {
 cat <<'USAGE'
 用法：
@@ -71,16 +127,21 @@ sh node-auto.sh --uninstall [--dir <安装目录> ]
   明文 8080/2052/2082/2086/2095），全不可用才随机高位口（只能开灰云）；
   只给一个端口即只起一个实例，两个都不给则两个都自动选
 --domain 对外域名或公网 IP，生成节点链接与证书用（NA_DOMAIN，可留空）
-  留空时用本机网卡地址出链接；填域名会先校验解析是否指向本机，
-  指不对就回落裸 IP 出链接、不中断安装；重跑带新域名可切换（UUID/端口不变）
+  留空时用本机公网地址出链接；填域名会先校验解析是否指向本机，验过才用
+  域名，指不对就回落裸 IP 出链接；回落地址只认公网 IP（内网地址写进
+  链接外网连不上），自动认不到公网 IP 时交互会请你手填、非交互会
+  报错退出（加 --ip 重跑）；重跑带新域名可切换
+  （UUID/端口不变）。交互安装时不用这个参数也能现输入域名：脚本会
+  把要加的解析记录打印出来（自己去面板加，不要开黄云），再验约
+  1 分钟；验不过时回车可复查、输新域名可换，满 3 次错就不用域名
+  继续装完，域名以后能改（菜单 2 或带 --domain 重跑）
 --ip 手填本机公网 IP（NA_IP）：公网 IP 不落在网卡上且元数据也问不到
   的机器，自动校验认不出本机公网地址；把域名解析先指向这个公网 IP，
   再用 --ip <公网IP> --domain <域名> 重跑即可配上域名。交互安装时
   不用记这个参数：能自动获得的地址直接过；域名解析到了、只是
-  自动确认不了时，才多问一步本机公网 IP（输错一直重问，错误
-  3 次直接报错、退出安装），填对了效果一样，并会存进配置、
-  以后不用再填。域名本身查不到解析的，要求重新输入，错误
-  3 次就不用域名、默认用本机地址出链接继续装，域名后期可改。
+  自动确认不了是不是本机时，才多问一步本机公网 IP（每轮限时
+  20 秒；空填、格式不对、对不上、超时都算失败，满 3 次直接报错、
+  退出安装），填对了效果一样，并会存进配置、以后不用再填。
   只给 --ip 不给 --domain 时，直接用这个 IP 出链接
 --uuid 指定 UUID（NA_UUID，缺省自动生成；重跑时读回旧值不换）
 --dir 安装目录（NA_DIR，缺省./node-auto）
@@ -88,7 +149,7 @@ sh node-auto.sh --uninstall [--dir <安装目录> ]
   缺省自动：有 systemd 且以 root 运行用 systemd，否则用 guard 巡检守护
   默认以运行脚本的身份直接安装、不自动提权；只有明确指定特权口或
   非 root 指定 systemd 这类直接装办不到的事，才会提示后经 sudo 落地
-  --node-tarball 本地 Node 包路径（NA_NODE_TARBALL）；机器上没有可用下载工具时，先把官方 Node 包传进来再用它安装
+  --node-tarball 本地 Node 包路径（NA_NODE_TARBALL）；机器上没有可用下载工具时，先把官方 Node 包传进来再用它安装；FreeBSD 上系统没有 Node 18 以上时也靠它喂包（FreeBSD 有系统 Node 18 以上则自动用系统的、不下载）
 --uninstall 卸载：停掉守护与实例进程（systemd 保活时一并移除单元）并删除安装目录
 已安装时在终端里不带参数重跑，进快捷菜单（1 看链接 / 2 改域名 / 3 重启服务 / 4 卸载 / 0 退出）
 USAGE
@@ -225,8 +286,9 @@ bracket_host() { # $1=域名或IP：IPv6 字面量加方括号（链接里的地
 # ---------- 快捷菜单（已安装＋终端交互＋不带任何参数/环境变量时） ----------
 if [ -n "$CFG_UUID" ] && [ -t 0 ] && [ "$RAW_ARGC" -eq 0 ] \
   && [ -z "${NA_TLS_PORT:-}${NA_PLAIN_PORT:-}${NA_DOMAIN:-}${NA_IP:-}${NA_UUID:-}${NA_DIR:-}${NA_KEEPALIVE:-}${NA_NODE_TARBALL:-}" ]; then
-  NODE_BIN="$DIR/node/bin/node"
-  menu_fetch() { # $1=url：用安装自带的 Node 取页面
+  NODE_BIN=$(cfg_get NODE_BIN "$DIR/config.env")
+  [ -n "$NODE_BIN" ] || NODE_BIN="$DIR/node/bin/node"
+  menu_fetch() { # $1=url：用安装所用的 Node 取页面
     [ -x "$NODE_BIN" ] || return 1
     "$NODE_BIN" -e '
       const u = new URL(process.argv[1]);
@@ -298,14 +360,12 @@ if [ -n "$CFG_UUID" ] && [ -t 0 ] && [ "$RAW_ARGC" -eq 0 ] \
     case "$choice" in
       1) menu_links;;
       2)
+        say '改域名：先把新域名的解析指向这台机器（记录内容填本机公网地址、不要开黄云），再在下面输入新域名。'
+        say '接下来和安装时是同一套校验：验过就换上新域名，验不过会改用本机地址出链接把这次走完（现在的域名就先不用了，之后随时能再改）；要是这台机器的公网 IP 脚本自动确认不了，中间会多问一步本机公网 IP，照提示填就行。'
         printf '输入新域名（留空取消）：'
         read -r nd || nd=''
+        nd=$(printf '%s' "$nd" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
         if [ -n "$nd" ]; then
-          printf '输入本机公网 IP（脚本能自动确认的留空即可；脚本自动获取不到本机公网 IP 的机器，需要手动输入它）：'
-          read -r nip || nip=''
-          if [ -n "$nip" ]; then
-            exec sh "$0" --dir "$DIR" --domain "$nd" --ip "$nip"
-          fi
           exec sh "$0" --dir "$DIR" --domain "$nd"
         fi
         ;;
@@ -391,13 +451,21 @@ printf '请输入 TLS 端口（留空跳过；两个都留空则自动选口）:
 printf '请输入明文端口（留空跳过；两个都留空则自动选口）: '; read -r PLAIN_PORT || PLAIN_PORT=''
 if [ -n "$TLS_PORT" ] || [ -n "$PLAIN_PORT" ]; then PROMPT_PORTS=1; fi
 fi
-# 域名输入（交互安装、且没用参数/已存配置给域名时）：输入的是已经把解析
-# 指向本机的域名；不输入就默认用本机地址出链接、照常往下装。输入了的，
-# 后面会判断解析是否正确（见「确定生效的对外地址」一段）：正确就用域名，
-# 判断不了会要求输入本机公网 IP，错误 3 次就不用域名、默认地址继续往下。
+# 域名输入（交互安装、且没用参数/已存配置给域名时）：先把这一问的
+# 来龙去脉说清再收输入——域名是给 TLS 链接与证书用的；输入了的，
+# 后面会打印要加的解析记录、再验解析对不对（见「确定生效的对外地址」
+# 一段）：验过就用域名，验不过有复查与换域名的机会，满 3 次错就不用
+# 域名、默认地址继续往下；解析到了只是确认不了是不是本机时，会再要求
+# 输入本机公网 IP。不输入（回车或限时内没输入）就跳过这一问，不算错。
 DOMAIN_FROM_PROMPT=0
 if [ -z "$DOMAIN" ] && [ -t 0 ]; then
-printf '请输入解析好的域名（先把域名解析指向本机再填；不输入则默认用本机地址出链接）: '; read -r DOMAIN || DOMAIN=''
+say ''
+say '接下来定 TLS 链接用的域名（可以跳过）：'
+say '  有自己的域名、想用域名出链接的，在下面输入完整域名。脚本会把要加的解析记录原样打印出来，你照着去域名面板加好（记录由你自己加，脚本不碰解析后台、不要任何令牌），脚本再花约 1 分钟验一遍解析对不对，验过就用域名、证书也签给它。'
+say "  没有域名、或还没弄好解析的，直接回车（或 ${NA_PROMPT_TIMEOUT} 秒不输入）跳过：用本机地址出链接，安装照常走完；域名以后随时能加——重跑脚本进菜单选 2 改域名，或带 --domain 重跑，UUID 与端口都不变。"
+printf '请输入域名（留空跳过）: '
+na_read_timed "$NA_PROMPT_TIMEOUT"
+DOMAIN=$(printf '%s' "$NA_IN" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
 [ -n "$DOMAIN" ] && DOMAIN_FROM_PROMPT=1
 fi
 if [ -z "$TLS_PORT" ] && [ -z "$PLAIN_PORT" ]; then
@@ -468,7 +536,8 @@ fi
 # 等 Node 就绪后，用 tools/resolve.js 把请求域名的 A/AAAA 解析与本机
 # 地址集合逐一比对（网卡地址＋机器自身元数据服务给出的公网地址；
 # 元数据只问机器自己的 link-local 端点，不经任何代理或第三方站点），
-# 指对才用域名；没填或没指对就用回落地址出链接（优先公网地址）。
+# 指对才用域名；没填或没指对就用回落地址出链接（只认公网地址；
+# 认不到公网地址时走后面「对外地址终检」的手填／报错，不拿内网顶上）。
 # 校验段在「安装期装 ws」之后、「生成证书」之前。
 
 # ---------- UUID（能用 shell 生成就先生成，否则等 Node 装好再补） ----------
@@ -986,17 +1055,44 @@ const out = s => { console.log(s); setTimeout(() => process.exit(0), 100); };
   // 手填的本机公网地址（--ip）：使用者明示的地址，进集合也作首选回落
   const extra = (isV4(asserted) && score(asserted) > 0) || asserted.indexOf(':') >= 0 ? [asserted] : [];
   const norm = a => String(a).toLowerCase().replace(/^::ffff:/, '');
-  const localSet = new Set(nic.concat(meta, extra).map(norm));
-  // 回落地址：手填地址最优先，其次元数据地址（不落在网卡上的公网
-  // 地址在那里），再看网卡；同一来源内按 score 高者优先，同分先列出的优先
+  // 公网判定：对外地址（进证书与链接的那个）只认公网——RFC1918 私网、
+  // 回环、链路本地、v6 的 ULA 都不算数（写进链接，外网也连不上）
+  const isPublic = a => {
+    if (isV4(a)) {
+      const p = a.split('.').map(Number);
+      if (p.some(x => x > 255)) return false;
+      if (p[0] === 0 || p[0] === 10 || p[0] === 127) return false;
+      if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return false;
+      if (p[0] === 192 && p[1] === 168) return false;
+      if (p[0] === 169 && p[1] === 254) return false;
+      return true;
+    }
+    const s = String(a).toLowerCase().replace(/^::ffff:/, '');
+    if (s === '::1') return false;
+    if (/^fe[89ab]/.test(s)) return false;
+    if (/^f[cd]/.test(s)) return false;
+    return s.indexOf(':') >= 0;
+  };
+  // 本机地址集合（域名校验用）：只收网卡／元数据里的公网地址，再加
+  // 手填地址——内网地址不进集合充数
+  const localSet = new Set(nic.concat(meta).filter(isPublic).concat(extra).map(norm));
+  // 回落地址分两档：bestAny 是不分公私的最优地址（只供打印记录块时
+  // 参考），fallback 只在公网地址里挑（手填最优先，其次元数据地址，
+  // 再看网卡；同一来源内按 score 高者优先，同分先列出的优先）；
+  // 没有公网地址时 fallback 输出 '-' 占位，由 shell 侧走手填／报错，
+  // 绝不拿内网地址顶上
   let fallback = '';
+  let bestAny = '';
   let bestScore = 0;
+  let bestAnyScore = 0;
   for (const a of extra.concat(meta, nic)) {
     const s = score(a);
-    if (s > bestScore) { bestScore = s; fallback = a; }
+    if (s > bestAnyScore) { bestAnyScore = s; bestAny = a; }
+    if (isPublic(a) && s > bestScore) { bestScore = s; fallback = a; }
   }
+  const fbField = fallback || '-';
   const isIpLiteral = isV4(target) || target.indexOf(':') >= 0;
-  if (!target) { out('FALLBACK ' + fallback); return; }
+  if (!target) { out('FALLBACK ' + fbField + (bestAny ? ' ' + bestAny : '')); return; }
   if (isIpLiteral) { out(localSet.has(norm(target)) ? 'SELF' : 'IP'); return; }
   let addrs = [];
   const r4 = await dns.resolve4(target).catch(() => []);
@@ -1010,7 +1106,7 @@ const out = s => { console.log(s); setTimeout(() => process.exit(0), 100); };
   if (hit) { out('MATCH ' + hit); return; }
   // NOMATCH 第三个字段附上实际解析到的地址（逗号分隔，可空）：调用方靠它
   // 区分「解析到了、只是没法确认是不是本机」与「压根没解析到」
-  out('NOMATCH ' + fallback + (addrs.length ? ' ' + addrs.join(',') : ''));
+  out('NOMATCH ' + fbField + (addrs.length ? ' ' + addrs.join(',') : ''));
 })().catch(() => { out('NOMATCH '); });
 SB_EOF_RESOLVE
 
@@ -1018,11 +1114,19 @@ cat > "$DIR/tools/package.json" <<'SB_EOF_TOOLSPKG'
 {"name":"cert-tools","private":true,"dependencies":{"selfsigned":"^5.2.0"}}
 SB_EOF_TOOLSPKG
 
-# ---------- 自拉 Node v22 ----------
+# ---------- Node 运行时（缺省自拉 v22；FreeBSD 优先用系统 Node） ----------
 NODE_HOME=$DIR/node
 NODE=$NODE_HOME/bin/node
 NPM=$NODE_HOME/bin/npm
+NODE_SOURCE=self
 node_ok() { [ -x "$NODE" ] && "$NODE" --version >/dev/null 2>&1; }
+node_major_ge() { # $1=node 路径 $2=最低主版本号：判断一个现成 Node 的版本够不够
+  _nv=$("$1" --version 2>/dev/null) || return 1
+  case "$_nv" in v[0-9]*) ;; *) return 1 ;; esac
+  _nm=${_nv#v}; _nm=${_nm%%.*}
+  case "$_nm" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$_nm" -ge "$2" ]
+}
 
 if ! node_ok; then
   case "$(uname -m)" in
@@ -1032,48 +1136,70 @@ if ! node_ok; then
     *)              die "不支持的 CPU 架构：$(uname -m)" ;;
   esac
   case "$(uname -s)" in
-    Linux)  NOS=linux ;;
-    Darwin) NOS=darwin ;;
-    *)      die "不支持的操作系统：$(uname -s)（本脚本只面向 Linux 类环境）" ;;
+    Linux)   NOS=linux ;;
+    Darwin)  NOS=darwin ;;
+    FreeBSD) NOS=freebsd ;;
+    *)       die "不支持的操作系统：$(uname -s)（本脚本面向 Linux / FreeBSD 环境）" ;;
   esac
-  mkdir -p "$DIR/.tmp"
-  if [ -n "$OPT_NODE_TARBALL" ]; then
-    # 本地包模式：包已在机器上（例如经跳板传进来），跳过下载
-    [ -f "$OPT_NODE_TARBALL" ] || die "指定的 Node 包不存在：$OPT_NODE_TARBALL"
-    case "$OPT_NODE_TARBALL" in
-      *.tar.gz) EXT=tar.gz ;;
-      *)        EXT=tar.xz ;;
-    esac
-    if [ "$EXT" = "tar.xz" ] && ! have xz; then
-      die "这台机器没有 xz，解不开 .tar.xz 的 Node 包：$OPT_NODE_TARBALL —— 请改用 .tar.gz 的 Node 包（文件名以 .tar.gz 结尾）重新运行"
-    fi
-    PKG="$DIR/.tmp/node.$EXT"
-    cp "$OPT_NODE_TARBALL" "$PKG" || die "复制 Node 包失败：$OPT_NODE_TARBALL"
-    say "使用本地 Node 包：$OPT_NODE_TARBALL"
-  else
-    NODE_VER=$(fetch_stdout https://nodejs.org/dist/index.json | grep -o 'v22\.[0-9]*\.[0-9]*' | head -n 1)
-    [ -n "$NODE_VER" ] || NODE_VER=$NODE_FALLBACK_VER
-    if have xz; then EXT=tar.xz; else EXT=tar.gz; fi
-    PKG="$DIR/.tmp/node.$EXT"
-    URL="https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-$NOS-$NARCH.$EXT"
-    say "下载 Node $NODE_VER（$NOS-$NARCH，$EXT）..."
-    if ! fetch_file "$URL" "$PKG"; then
-      if [ "$EXT" != "tar.gz" ]; then
-        EXT=tar.gz
-        PKG="$DIR/.tmp/node.tar.gz"
-        URL="https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-$NOS-$NARCH.tar.gz"
-        say "xz 包下载失败，改试 gz 包..."
-        fetch_file "$URL" "$PKG" || die "Node 下载失败：$URL（请检查出站网络能否访问 nodejs.org）"
-      else
-        die "Node 下载失败：$URL（请检查出站网络能否访问 nodejs.org）"
-      fi
+  # FreeBSD 分支：Node 官方不发布 FreeBSD 二进制包，这类机器上的 Node
+  # 一般由 pkg / ports 提供。系统里有够版本的 node 与 npm 就直接用系统
+  # 的、零下载（版本下限取主版本 18：依赖声明的硬下限是 selfsigned 的
+  # 15.6 与 ws 的 10，脚本自身还用 crypto.randomUUID（14.17 起有），取
+  # 18 与项目手册「系统 Node 有 v18 以上可直接用」的既有口径一致）；
+  # 没有才走下面的本地包/下载，下载多半会失败（官方无此文件），失败
+  # 前的提示已把补救办法说清。Linux / Darwin 不进这个分支，路径不变。
+  if [ "$NOS" = "freebsd" ] && [ -z "$OPT_NODE_TARBALL" ]; then
+    SYS_NODE=$(command -v node 2>/dev/null)
+    SYS_NPM=$(command -v npm 2>/dev/null)
+    if [ -n "$SYS_NODE" ] && [ -n "$SYS_NPM" ] && node_major_ge "$SYS_NODE" 18; then
+      NODE=$SYS_NODE
+      NPM=$SYS_NPM
+      NODE_SOURCE=system
+      say "使用系统 Node：$SYS_NODE（$("$NODE" --version)），不另外下载"
+    else
+      say "提示：没找到可用的系统 Node（需要 PATH 里有 node 与 npm、且 node 主版本 18 以上）。Node 官方不发布 FreeBSD 二进制包，下面的自动下载多半会失败；建议先用 pkg 安装 Node（如 pkg install node22）后重跑，或把 Node 包传到本机、用 --node-tarball 指定它安装。"
     fi
   fi
-  rm -rf "$NODE_HOME"
-  mkdir -p "$NODE_HOME"
-  tar -xf "$PKG" -C "$NODE_HOME" --strip-components 1 || die "Node 解压失败"
-  rm -rf "$DIR/.tmp"
-  node_ok || die "Node 安装后仍不可用（$NODE --version 失败）"
+  if [ "$NODE_SOURCE" != "system" ]; then
+    mkdir -p "$DIR/.tmp"
+    if [ -n "$OPT_NODE_TARBALL" ]; then
+      # 本地包模式：包已在机器上（例如经跳板传进来），跳过下载
+      [ -f "$OPT_NODE_TARBALL" ] || die "指定的 Node 包不存在：$OPT_NODE_TARBALL"
+      case "$OPT_NODE_TARBALL" in
+        *.tar.gz) EXT=tar.gz ;;
+        *)        EXT=tar.xz ;;
+      esac
+      if [ "$EXT" = "tar.xz" ] && ! have xz; then
+        die "这台机器没有 xz，解不开 .tar.xz 的 Node 包：$OPT_NODE_TARBALL —— 请改用 .tar.gz 的 Node 包（文件名以 .tar.gz 结尾）重新运行"
+      fi
+      PKG="$DIR/.tmp/node.$EXT"
+      cp "$OPT_NODE_TARBALL" "$PKG" || die "复制 Node 包失败：$OPT_NODE_TARBALL"
+      say "使用本地 Node 包：$OPT_NODE_TARBALL"
+    else
+      NODE_VER=$(fetch_stdout https://nodejs.org/dist/index.json | grep -o 'v22\.[0-9]*\.[0-9]*' | head -n 1)
+      [ -n "$NODE_VER" ] || NODE_VER=$NODE_FALLBACK_VER
+      if have xz; then EXT=tar.xz; else EXT=tar.gz; fi
+      PKG="$DIR/.tmp/node.$EXT"
+      URL="https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-$NOS-$NARCH.$EXT"
+      say "下载 Node $NODE_VER（$NOS-$NARCH，$EXT）..."
+      if ! fetch_file "$URL" "$PKG"; then
+        if [ "$EXT" != "tar.gz" ]; then
+          EXT=tar.gz
+          PKG="$DIR/.tmp/node.tar.gz"
+          URL="https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-$NOS-$NARCH.tar.gz"
+          say "xz 包下载失败，改试 gz 包..."
+          fetch_file "$URL" "$PKG" || die "Node 下载失败：$URL（请检查出站网络能否访问 nodejs.org）"
+        else
+          die "Node 下载失败：$URL（请检查出站网络能否访问 nodejs.org）"
+        fi
+      fi
+    fi
+    rm -rf "$NODE_HOME"
+    mkdir -p "$NODE_HOME"
+    tar -xf "$PKG" -C "$NODE_HOME" --strip-components 1 || die "Node 解压失败"
+    rm -rf "$DIR/.tmp"
+    node_ok || die "Node 安装后仍不可用（$NODE --version 失败）"
+  fi
 fi
 export PATH="$NODE_HOME/bin:$PATH"
 say "Node 就绪：$("$NODE" --version)"
@@ -1092,16 +1218,26 @@ if [ ! -d "$DIR/app/node_modules/ws" ]; then
 fi
 
 # ---------- 确定生效的对外地址（域名解析与本机地址集合比对：网卡地址＋元数据公网地址＋手填公网地址） ----------
-# 两道判断，口径分开：
-# 1) 域名对不对：能直接获得的地址（网卡／元数据／--ip／已存配置）直接
-#    比对、正确就用域名，直接过不多问。域名压根查不到解析算不正确——
-#    交互里现输入的域名会要求重新输入，错误 3 次就不用域名、默认用
-#    本机地址出链接继续往下装（域名后期可改：菜单 2 或带 --domain 重跑）。
-# 2) 本机公网 IP：域名解析到了、只是脚本自动确认不了是不是本机（公网
-#    IP 不落在网卡上、元数据也问不到）时，才要求手动输入本机公网 IP，
-#    提示里说清脚本自动获取不到、需要手动输入；输错一直重问，错误
-#    3 次直接报错、退出安装。
-# 非交互调用两道都不问：确认不了就回落本机地址出链接，并提示 --ip。
+# 这一段定 TLS 链接与证书最终用域名还是用裸 IP，分前后两道判断，
+# 每轮输入都限时 20 秒（NA_PROMPT_TIMEOUT）：
+# 第一道「域名对不对」：能直接获得的地址（网卡／元数据／--ip／已存
+# 配置）先组成成本机地址集合，域名的解析与它逐一比对，命中就用
+# 域名，直接过不多问。没命中分两种情形：压根查不到任何记录，和
+# 查到了、但里面没有本机地址。交互里现输入的域名走一套完整问答：
+# 先把要加的记录原样打印出来，再轮询约 1 分钟等解析生效；还是不
+# 过就把实际查到的解析打出来、提醒不要开黄云，计 1 次错，然后回车
+# 复查同一个域名、或输入新域名换一个再查，超时没输入也计 1 次错，
+# 格式不对只提醒重输、不计次；满 3 次错就不用域名、用本机地址出
+# 链接把安装走完（域名后期可改：菜单 2 或带 --domain 重跑）。参数
+# 或配置给的域名不进问答：照样验，验不过就回落裸 IP 并把实际解析
+# 与补救办法说清。
+# 第二道「公网 IP 是不是本机」：只有域名解析到了、只是自动确认不
+# 了它是不是本机（公网 IP 不落在网卡上、元数据也问不到）时，才要
+# 求手动输入本机公网 IP 来比对，提示里说清为什么要手填、去哪里看；
+# 空填、格式不对、与解析对不上、超时都算失败，满 3 次直接报错、
+# 退出安装（地址不对硬装出来的链接全是坏的，不如停下来问清）。
+# 非交互调用两道都不问：确认不了就回落公网地址出链接；连公网地址
+# 都认不到时，在后面的「对外地址终检」里报错退出、提示 --ip。
 REQ_DOMAIN=$DOMAIN
 ask_public_ip() {
   [ -t 0 ] || return 1
@@ -1109,12 +1245,20 @@ ask_public_ip() {
   [ -n "$REQ_DOMAIN" ] || return 1
   ip_try=1
   while [ "$ip_try" -le 3 ]; do
-    say "提示：脚本自动获取不到本机公网 IP——网卡地址里没有、向元数据服务也没问到，没法确认 $REQ_DOMAIN 的解析是不是指向本机，需要你手动输入本机公网 IP（云厂商控制台／服务商面板上能看到这台机器的公网 IP）。"
-    printf '请输入本机公网 IP（第 %s/3 次）: ' "$ip_try"
-    read -r ip_in || return 1
-    if [ -z "$ip_in" ]; then
+    say "提示：$REQ_DOMAIN 的解析已经查到了，但脚本没法自动确认它指向的就是这台机器——这台机器的公网 IP 不落在网卡上、向元数据服务也没问到。"
+    say "需要你手动输入这台机器的公网 IP 来确认（在云厂商控制台／服务商面板上能看到）。输进来之后脚本拿它和 $REQ_DOMAIN 的解析重新比对，对上就用域名出链接。"
+    printf '请输入本机公网 IP（第 %s/3 次，%s 秒内输入）: ' "$ip_try" "$NA_PROMPT_TIMEOUT"
+    na_read_timed "$NA_PROMPT_TIMEOUT"
+    _arc=$?
+    ip_in=$NA_IN
+    if [ "$_arc" = "2" ]; then
+      say "${NA_PROMPT_TIMEOUT} 秒内没输完，算失败一次。"
+    elif [ "$_arc" != "0" ]; then
+      return 1 # 输入流断了（EOF）：不在这里纠缠，交回调用方回落
+    elif [ -z "$ip_in" ]; then
       say "未输入，算失败一次。"
     else
+      ip_in=$(printf '%s' "$ip_in" | tr -d '[:space:]')
       case "$ip_in" in
         *[!0-9a-fA-F.:]*) ip_bad=1;;
         *.*.*.*|*:*) ip_bad=0;;
@@ -1130,83 +1274,335 @@ ask_public_ip() {
           say "已确认：$REQ_DOMAIN 的解析指向你输入的本机公网 IP $ip_in，改用域名出链接（这个 IP 会存进配置，以后不用再填）"
           return 0
         fi
+        ip_res=$(printf '%s' "$ip_eff" | awk '{print $3}')
         say "提示：$REQ_DOMAIN 的解析与输入的公网 IP $ip_in 对不上，算失败一次。"
+        [ -n "$ip_res" ] && say "  实际查到 $REQ_DOMAIN 的解析是：$ip_res"
       fi
     fi
     ip_try=$((ip_try + 1))
   done
   err "错误：手动输入本机公网 IP 连续 3 次失败，无法确认 $REQ_DOMAIN 的解析指向本机，安装退出。"
-  err "确认本机公网 IP 后重跑即可；也可以直接指定：sh node-auto.sh --ip <本机公网IP> --domain $REQ_DOMAIN"
+  err "先去云厂商控制台／服务商面板把这台机器的公网 IP 确认准了再重跑即可；也可以直接指定：sh node-auto.sh --ip <本机公网IP> --domain $REQ_DOMAIN"
   exit 1
 }
 resolve_into() { # $1=要校验的域名或IP：结果写进 EFF_TAG / EFF_ADDR / EFF_RESOLVED
   EFF=$("$NODE" "$DIR/tools/resolve.js" "$1" "$PUBLIC_IP" 2>/dev/null)
   EFF_TAG=$(printf '%s' "$EFF" | awk '{print $1}')
   EFF_ADDR=$(printf '%s' "$EFF" | awk '{print $2}')
+  [ "$EFF_ADDR" = "-" ] && EFF_ADDR='' # resolve.js 用 '-' 表示「没有公网回落地址」
   EFF_RESOLVED=$(printf '%s' "$EFF" | awk '{print $3}')
+}
+print_record_block() { # $1=域名 $2=记录内容（要指向的本机公网地址）：把要加的解析记录原样打出来，装机人自己去面板加
+  case "$2" in
+    *:*) _rt=AAAA;;
+    *) _rt=A;;
+  esac
+  say ''
+  say '请去你的域名解析面板加上这一条记录（已经加过就照这个核对一遍）：'
+  say "  类型 Type：$_rt"
+  say "  名称 Name：$1"
+  say "  内容 Content：$2"
+  say '  代理状态 Proxy status：关（DNS only／仅限 DNS）——不要开黄云！开了黄云，解析到的是 CDN 的地址，和本机地址永远对不上，校验过不了'
+  say '  TTL：自动（Auto）'
+  case "$2" in
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*|127.*|::1|fe80:*|f[cd]*:*)
+      say "  注意：上面这个内容地址看起来是内网／本机地址。如果这台机器另有单独的公网 IP（在云厂商控制台／服务商面板上能看到），记录内容要填那个公网 IP，不要填这个内网地址。"
+      ;;
+  esac
+}
+domain_fail_note() { # $1=已错次数：用最近一次校验留在 EFF_* 里的结果，把实际情形说明白
+  say "提示：$DOMAIN 未解析正确域名（已错 $1/3 次）。"
+  if [ -n "$EFF_RESOLVED" ]; then
+    say "  实际查到 $DOMAIN 的解析是：$EFF_RESOLVED ——里面没有本机地址，所以没通过。"
+  else
+    say "  实际查到 $DOMAIN 的解析是：（没有任何记录）——记录可能还没加，或者还没生效。"
+  fi
+  say '  请对照上面打印的记录核对一遍：类型、名称、内容有没有填错，代理状态必须是关（不要开黄云）。刚加的记录可能还没生效，稍等一会儿复查即可。'
+}
+# 轮询校验 $DOMAIN 的解析：刚加的记录要等传播，查一次就下结论太急——
+# 每隔几秒查一次、最长约 1 分钟（次数与间隔可用 NA_DNS_TRIES／
+# NA_DNS_SLEEP 调，缺省 8 次、每次间隔 5 秒）。任一次命中
+# （MATCH/SELF/IP）返回 0；一直对不上返回 1，最后一次的结果留在
+# EFF_* 里供调用方打印实际解析。认不出的结果不拦安装、按通过处理。
+NA_DNS_TRIES=${NA_DNS_TRIES:-8}
+NA_DNS_SLEEP=${NA_DNS_SLEEP:-5}
+verify_domain_poll() {
+  _vi=1
+  while [ "$_vi" -le "$NA_DNS_TRIES" ]; do
+    resolve_into "$DOMAIN"
+    case "$EFF_TAG" in
+      MATCH|SELF|IP) return 0;;
+      NOMATCH) ;;
+      *) return 0;;
+    esac
+    if [ "$_vi" -lt "$NA_DNS_TRIES" ]; then
+      [ "$_vi" = "1" ] && say '  暂时还没对上，正在等解析生效（最长约 1 分钟）…'
+      sleep "$NA_DNS_SLEEP"
+    fi
+    _vi=$((_vi + 1))
+  done
+  return 1
 }
 if [ -z "$DOMAIN" ]; then
   resolve_into ""
   DOMAIN=$EFF_ADDR
-else
-  dom_try=1
-  while :; do
-    resolve_into "$DOMAIN"
-    case "$EFF_TAG" in
-      MATCH|SELF|IP)
-        break # 正确：域名解析指向本机（或传入的就是 IP 字面量），直接用
-        ;;
-      FALLBACK)
-        DOMAIN=$EFF_ADDR
+elif [ "$DOMAIN_FROM_PROMPT" = "1" ] && [ -t 0 ]; then
+  # 交互里现输入的域名：一套完整问答——打印记录 → 轮询验 →（解析到了
+  # 只是确认不了时先问公网 IP）→ 不过计错 → 回车复查／输新域名换 →
+  # 满 3 次错回落本机地址把安装走完
+  resolve_into ""
+  FALLBACK_ADDR=$EFF_ADDR
+  BEST_ADDR=$EFF_RESOLVED # 不分公私的最优本机地址：记录块内容没公网地址时拿它作参考（块里自带内网提醒）
+  dom_errors=0
+  dom_done=0
+  while [ "$dom_done" = "0" ]; do
+    print_record_block "$DOMAIN" "${PUBLIC_IP:-${FALLBACK_ADDR:-$BEST_ADDR}}"
+    say '现在开始验解析（最长约 1 分钟）：还没去面板加记录的，现在去加还来得及。'
+    if verify_domain_poll; then
+      say "已确认：$DOMAIN 的解析指向本机，用域名出链接。"
+      dom_done=1
+      break
+    fi
+    if [ -n "$EFF_RESOLVED" ]; then
+      # 解析到了、只是自动确认不了是不是本机 → 先走公网 IP 那道；它内部
+      # 失败满 3 次会直接退出安装，能正常返回 1 才轮到域名这边计错
+      REQ_DOMAIN=$DOMAIN
+      if ask_public_ip; then
+        dom_done=1
         break
-        ;;
-      NOMATCH)
-        if [ -n "$EFF_RESOLVED" ]; then
-          # 解析到了、只是自动确认不了是不是本机 → 进 IP 输入那道
-          REQ_DOMAIN=$DOMAIN
-          if ask_public_ip; then
-            break # IP 对上了，DOMAIN 保持域名
-          fi
-          say "提示：$DOMAIN 的解析未指向本机，已改用裸 IP 出链接；解析指对后带 --domain 重跑即可切换（UUID/端口不变）"
-          say "提示：若域名解析其实已指向本机、只是这台机器的公网 IP 不落在网卡上且元数据也问不到（这类云主机自动校验认不出本机公网地址），重跑时用 --ip 手填公网地址再配域名：sh node-auto.sh --ip <本机公网IP> --domain $DOMAIN"
-          DOMAIN=$EFF_ADDR
-          break
+      fi
+    fi
+    dom_errors=$((dom_errors + 1))
+    domain_fail_note "$dom_errors"
+    if [ "$dom_errors" -ge 3 ]; then
+      say '提示：域名连续 3 次没验过，先不用域名、用本机地址出链接把安装走完。域名以后随时能改：重跑脚本用菜单 2 改域名，或带 --domain 重跑（UUID/端口不变）。'
+      DOMAIN=$FALLBACK_ADDR
+      dom_done=1
+      break
+    fi
+    # 重试轮：回车 = 复查当前域名（不用重输）；输入新域名 = 换一个再查；
+    # 超时没输入计 1 次错；格式不对只提醒、不计次
+    while :; do
+      print_record_block "$DOMAIN" "${PUBLIC_IP:-${FALLBACK_ADDR:-$BEST_ADDR}}"
+      printf '回车 = 复查当前域名 %s，输入新域名 = 换一个域名再查（%s 秒不输入算一次错，已错 %s/3 次）: ' "$DOMAIN" "$NA_PROMPT_TIMEOUT" "$dom_errors"
+      na_read_timed "$NA_PROMPT_TIMEOUT"
+      _drc=$?
+      if [ "$_drc" = "2" ]; then
+        dom_errors=$((dom_errors + 1))
+        say "提示：${NA_PROMPT_TIMEOUT} 秒没有输入，算一次错（已错 ${dom_errors}/3 次）。复查之前先确认：记录已经按上面打印的内容加好、代理状态是关（不要开黄云）。"
+        if [ "$dom_errors" -ge 3 ]; then
+          say '提示：域名连续 3 次没验过，先不用域名、用本机地址出链接把安装走完。域名以后随时能改：重跑脚本用菜单 2 改域名，或带 --domain 重跑（UUID/端口不变）。'
+          DOMAIN=$FALLBACK_ADDR
+          dom_done=1
         fi
-        # 压根查不到解析 → 域名不正确
-        if [ "$DOMAIN_FROM_PROMPT" = "1" ] && [ -t 0 ]; then
-          if [ "$dom_try" -ge 3 ]; then
-            say "提示：域名连续 3 次不正确，先不用域名、默认用本机地址出链接继续安装。域名后期可改：装完重跑脚本用菜单 2 改域名，或带 --domain 重跑。"
-            DOMAIN=$EFF_ADDR
-            break
-          fi
-          say "提示：$DOMAIN 查不到解析，不正确（第 $dom_try/3 次）。请确认域名解析已指向本机后重新输入。"
-          printf '请重新输入解析好的域名（留空则不用域名、默认用本机地址出链接）: '
-          read -r nd || nd=''
-          if [ -z "$nd" ]; then
-            DOMAIN=$EFF_ADDR
-            break
-          fi
-          DOMAIN=$nd
-          dom_try=$((dom_try + 1))
-        else
-          say "提示：$DOMAIN 的解析未指向本机，已改用裸 IP 出链接；解析指对后带 --domain 重跑即可切换（UUID/端口不变）"
-          DOMAIN=$EFF_ADDR
-          break
-        fi
-        ;;
-      *)
-        DOMAIN=${EFF_ADDR:-$DOMAIN}
         break
-        ;;
-    esac
+      fi
+      if [ "$_drc" != "0" ]; then
+        # 输入流断了（EOF）：不再纠缠，用本机地址继续装完
+        DOMAIN=$FALLBACK_ADDR
+        dom_done=1
+        break
+      fi
+      _nd=$(printf '%s' "$NA_IN" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+      if [ -z "$_nd" ]; then
+        break # 回车：回到外层，对当前域名再验一遍
+      fi
+      if ! valid_domain "$_nd"; then
+        say '提示：这个域名格式不对（要完整子域名、至少带一个点、只用字母数字与横杠），重新输入（不计次）。'
+        continue
+      fi
+      DOMAIN=$_nd
+      break # 换了新域名：回到外层，打印新记录并验
+    done
   done
+else
+  # 参数／配置给的域名：照样验，但不进问答——验过用域名；解析到了只是
+  # 确认不了时，交互下仍给一次手填公网 IP 的机会（非交互它自己返回 1）；
+  # 都不行就回落裸 IP，并把实际解析与补救办法说清
+  if verify_domain_poll; then
+    : # 验过，DOMAIN 保持域名
+  elif [ -n "$EFF_RESOLVED" ] && ask_public_ip; then
+    : # 手填 IP 对上了，DOMAIN 保持域名
+  else
+    if [ -n "$EFF_RESOLVED" ]; then
+      say "提示：$DOMAIN 实际查到的解析是：$EFF_RESOLVED ——里面没有本机地址，已改用裸 IP 出链接；把解析指对本机后带 --domain 重跑即可切换（UUID/端口不变）。注意不要开黄云：开了黄云，解析到的是 CDN 的地址，永远对不上。"
+    else
+      say "提示：$DOMAIN 查不到任何解析记录，已改用裸 IP 出链接；先去面板把记录加上（内容填本机公网地址、代理状态关、不要开黄云），再带 --domain 重跑即可切换（UUID/端口不变）。"
+    fi
+    say "提示：若域名解析其实已指向本机、只是这台机器的公网 IP 不落在网卡上且元数据也问不到，重跑时用 --ip 把公网地址手填进来再配域名：sh node-auto.sh --ip <本机公网IP> --domain $DOMAIN"
+    DOMAIN=$EFF_ADDR
+  fi
 fi
-[ -n "$DOMAIN" ] || die "无法确定对外地址：本机地址取不到，请用 --domain 指定"
-case "$DOMAIN" in
-  127.*|::1)
-    say "提示：取到的对外地址是回环地址 $DOMAIN，生成的链接只能在本机使用；有公网地址时请用 --domain 指定"
-    ;;
-esac
+is_ip_literal() { # $1：合法 IPv4 点分形式（四段纯数字、每段 0–255）或含冒号的 v6 字面量返回 0；域名等其余返回 1
+  case "$1" in
+    *:*) return 0;;
+    *.*.*.*)
+      case "$1" in *[!0-9.]*) return 1;; esac
+      _la=${1%%.*}; _lr=${1#*.}; _lb=${_lr%%.*}; _lr=${_lr#*.}; _lc=${_lr%%.*}; _ld=${_lr#*.}
+      case "$_ld" in *.*|''|*[!0-9]*) return 1;; esac
+      [ -n "$_la" ] && [ -n "$_lb" ] && [ -n "$_lc" ] || return 1
+      [ "$_la" -le 255 ] && [ "$_lb" -le 255 ] && [ "$_lc" -le 255 ] && [ "$_ld" -le 255 ] || return 1
+      return 0;;
+    *) return 1;;
+  esac
+}
+is_public_ip() { # $1=IP 字面量：公网返回 0；RFC1918 私网／回环／链路本地／ULA 等返回 1
+  case "$1" in
+    *.*.*.*)
+      case "$1" in *[!0-9.]*) return 1;; esac
+      _pa=${1%%.*}; _pr=${1#*.}; _pb=${_pr%%.*}; _pr=${_pr#*.}; _pc=${_pr%%.*}; _pd=${_pr#*.}
+      case "$_pd" in *.*|''|*[!0-9]*) return 1;; esac
+      [ -n "$_pa" ] && [ -n "$_pb" ] && [ -n "$_pc" ] || return 1
+      [ "$_pa" -le 255 ] && [ "$_pb" -le 255 ] && [ "$_pc" -le 255 ] && [ "$_pd" -le 255 ] || return 1
+      case "$_pa" in 0|10|127) return 1;; esac
+      if [ "$_pa" = "172" ] && [ "$_pb" -ge 16 ] && [ "$_pb" -le 31 ]; then return 1; fi
+      if [ "$_pa" = "192" ] && [ "$_pb" = "168" ]; then return 1; fi
+      if [ "$_pa" = "169" ] && [ "$_pb" = "254" ]; then return 1; fi
+      return 0;;
+    *:*)
+      _pl=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+      case "$_pl" in
+        ::1) return 1;;
+        fe[89ab]*) return 1;;
+        f[cd]*) return 1;;
+      esac
+      return 0;;
+    *) return 1;;
+  esac
+}
+is_ambiguous_ip() { # $1=IP 字面量：落在断不准公私的地址段（100.64.0.0/10 运营商级 NAT）返回 0，其余返回 1
+  case "$1" in
+    100.*.*.*)
+      case "$1" in *[!0-9.]*) return 1;; esac
+      _gb=${1#*.}; _gb=${_gb%%.*}
+      [ -n "$_gb" ] && [ "$_gb" -ge 64 ] && [ "$_gb" -le 127 ]
+      ;;
+    *) return 1;;
+  esac
+}
+# 自动认不出公网 IP 时的手填道：计数口径与第二道（域名确认）完全
+# 一致——空输入、超时（每轮限时）、格式不对或不是公网地址，都算错
+# 一次、每次把错在哪与已错几次说清；满 3 次明确提示后退出安装，
+# 不回落、不拿任何地址顶上。EOF（输入流断了）返回 1，交回调用方
+# 按非交互口径报错退出。
+ask_fallback_ip() {
+  [ -t 0 ] || return 1
+  ip_try=1
+  while [ "$ip_try" -le 3 ]; do
+    say "提示：脚本没能自动认出这台机器的公网 IP——从网卡和元数据服务拿到的地址都不是公网地址。内网／回环地址写进证书和链接，外网根本连不上，不能拿来顶上。"
+    say "需要你手动输入这台机器的公网 IP（在云厂商控制台／服务商面板上能看到）。输进来之后就用它出链接，并存进配置、以后不用再填。"
+    printf '请输入本机公网 IP（第 %s/3 次，%s 秒内输入）: ' "$ip_try" "$NA_PROMPT_TIMEOUT"
+    na_read_timed "$NA_PROMPT_TIMEOUT"
+    _arc=$?
+    ip_in=$NA_IN
+    if [ "$_arc" = "2" ]; then
+      say "${NA_PROMPT_TIMEOUT} 秒内没输完，算失败一次（已错 $ip_try/3 次）。"
+    elif [ "$_arc" != "0" ]; then
+      return 1 # 输入流断了（EOF）：交回调用方按非交互口径报错退出
+    elif [ -z "$ip_in" ]; then
+      say "未输入，算失败一次（已错 $ip_try/3 次）。"
+    else
+      ip_in=$(printf '%s' "$ip_in" | tr -d '[:space:]')
+      case "$ip_in" in
+        *[!0-9a-fA-F.:]*) ip_bad=1;;
+        *.*.*.*|*:*) ip_bad=0;;
+        *) ip_bad=1;;
+      esac
+      if [ "$ip_bad" = "1" ]; then
+        say "输入的不是合法 IP 地址，算失败一次（已错 $ip_try/3 次）：$ip_in"
+      elif ! is_public_ip "$ip_in"; then
+        say "输入的 $ip_in 不是公网地址（内网／回环／链路本地地址不能用作对外地址），算失败一次（已错 $ip_try/3 次）。"
+      else
+        PUBLIC_IP=$ip_in
+        say "已记下本机公网 IP：$ip_in，用它出链接（会存进配置，以后不用再填）。"
+        return 0
+      fi
+    fi
+    ip_try=$((ip_try + 1))
+  done
+  err "错误：手动输入本机公网 IP 连续 3 次失败，没法确定对外地址，安装退出（不会拿内网地址顶上把安装走完）。"
+  err "先去云厂商控制台／服务商面板把这台机器的公网 IP 确认准了再重跑即可；也可以直接指定：sh node-auto.sh --ip <本机公网IP>"
+  exit 1
+}
+# 探测到的地址断不准是不是公网（100.64.0.0/10 运营商级 NAT 段）时的
+# 确认道：这类地址既不在 RFC1918 私网段里、又没法光凭地址断定是公
+# 网，脚本不硬判，交给装机人确认——提示里写明输入的必须是服务器的
+# 公网 IP；输入与探测到的地址完全一致，就按装机人确认是公网接受；
+# 输入别的地址，照常按公网口径验（明确的私网／回环照旧判死计次）。
+# 计数与其它手填道一致：空输入、超时（每轮限时）、格式不对、输了
+# 私网地址都算错一次、每次说清，满 3 次明确提示后退出安装。EOF
+# （输入流断了）返回 1，交回调用方按非交互口径报错退出。
+ask_ambiguous_ip() { # $1=探测到的断不准地址
+  [ -t 0 ] || return 1
+  amb_try=1
+  while [ "$amb_try" -le 3 ]; do
+    say "提示：脚本探测到这台机器的地址是 $1，它落在运营商级 NAT 地址段（100.64.0.0/10）里——这种地址光凭本身断不准是不是公网：有些机器上它就是公网地址，有些机器上它只是运营商内网、真正的公网 IP 是另一个。"
+    say "需要你来确认：下面输入的必须是服务器的公网 IP（在云厂商控制台／服务商面板上能看到）。如果 $1 就是这台机器的公网 IP，把它原样输进来即可，脚本按你确认的来用；如果不是，就输入真正的那个公网 IP。"
+    printf '请输入本机公网 IP（第 %s/3 次，%s 秒内输入）: ' "$amb_try" "$NA_PROMPT_TIMEOUT"
+    na_read_timed "$NA_PROMPT_TIMEOUT"
+    _arc=$?
+    ip_in=$NA_IN
+    if [ "$_arc" = "2" ]; then
+      say "${NA_PROMPT_TIMEOUT} 秒内没输完，算失败一次（已错 $amb_try/3 次）。"
+    elif [ "$_arc" != "0" ]; then
+      return 1 # 输入流断了（EOF）：交回调用方按非交互口径报错退出
+    elif [ -z "$ip_in" ]; then
+      say "未输入，算失败一次（已错 $amb_try/3 次）。"
+    else
+      ip_in=$(printf '%s' "$ip_in" | tr -d '[:space:]')
+      case "$ip_in" in
+        *[!0-9a-fA-F.:]*) ip_bad=1;;
+        *.*.*.*|*:*) ip_bad=0;;
+        *) ip_bad=1;;
+      esac
+      if [ "$ip_bad" = "1" ]; then
+        say "输入的不是合法 IP 地址，算失败一次（已错 $amb_try/3 次）：$ip_in"
+      elif [ "$ip_in" = "$1" ]; then
+        PUBLIC_IP=$ip_in
+        say "已按你的确认记下：$ip_in 是这台机器的公网 IP，用它出链接（会存进配置，以后不用再确认）。"
+        return 0
+      elif ! is_public_ip "$ip_in"; then
+        say "输入的 $ip_in 不是公网地址（内网／回环／链路本地地址不能用作对外地址），算失败一次（已错 $amb_try/3 次）。"
+      else
+        PUBLIC_IP=$ip_in
+        say "已记下本机公网 IP：$ip_in，用它出链接（会存进配置，以后不用再填）。"
+        return 0
+      fi
+    fi
+    amb_try=$((amb_try + 1))
+  done
+  err "错误：确认本机公网 IP 连续 3 次失败，没法确定对外地址，安装退出（不会拿断不准的地址顶上把安装走完）。"
+  err "先去云厂商控制台／服务商面板把这台机器的公网 IP 确认准了再重跑即可；也可以直接指定：sh node-auto.sh --ip <本机公网IP>"
+  exit 1
+}
+# ---------- 对外地址终检（只认公网 IP） ----------
+# 走到这里，DOMAIN 应是已验过的域名、或一个公网 IP，分三种情形：
+# ① 已验过的域名：不是 IP 字面量，直接放行——不拿域名串当 IP 判。
+# ② IP 字面量落在断不准公私的地址段（100.64.0.0/10）：脚本不硬
+#    判，交互下走上面的确认道，非交互报错退出、写明 --ip 改法；
+#    地址若是装机人已明示给的（--ip／已存配置读回，即与 PUBLIC_IP
+#    相同），等于已经确认过，不再多问。
+# ③ IP 字面量却不是公网（内网／回环／链路本地），或压根没定下来
+#    （自动探测只拿到内网地址）：交互下走手填道，非交互直接报错
+#    退出、写明加 --ip 的改法——绝不静默拿内网地址顶上把安装走完
+#    （那种链接外网根本连不上）。
+if is_ip_literal "$DOMAIN" && is_ambiguous_ip "$DOMAIN" && [ "$DOMAIN" != "$PUBLIC_IP" ]; then
+  if [ -t 0 ] && ask_ambiguous_ip "$DOMAIN"; then
+    DOMAIN=$PUBLIC_IP
+  else
+    err "错误：探测到的对外地址 $DOMAIN 落在运营商级 NAT 地址段（100.64.0.0/10），光凭地址没法断定它是不是这台机器的公网 IP，安装退出。"
+    err "改法：先去云厂商控制台／服务商面板确认这台机器的公网 IP，再重跑并用 --ip 指定：sh node-auto.sh --ip <本机公网IP>（若 $DOMAIN 就是公网 IP，就填它本身）；或在终端里交互运行、按提示确认。"
+    exit 1
+  fi
+elif [ -z "$DOMAIN" ] || { is_ip_literal "$DOMAIN" && ! is_public_ip "$DOMAIN"; }; then
+  if [ -t 0 ] && ask_fallback_ip; then
+    DOMAIN=$PUBLIC_IP
+  else
+    err "错误：没能确定公网的对外地址（自动探测到的都不是公网地址），安装退出。"
+    err "改法：重跑时用 --ip 把本机公网 IP 手填进来：sh node-auto.sh --ip <本机公网IP>（配域名再加 --domain <域名>）；或在终端里交互运行、按提示手填。"
+    exit 1
+  fi
+fi
 
 # ---------- 保活方式（systemd 可用且 root 时默认 systemd，否则 guard） ----------
 systemd_usable() {
@@ -1250,6 +1646,8 @@ fi
   printf 'PLAIN_PORT=%s\n' "$PLAIN_PORT"
   printf 'CERT_DOMAIN=%s\n' "$CERT_DOMAIN"
   printf 'KEEPALIVE=%s\n' "$KEEPALIVE"
+  printf 'NODE_SOURCE=%s\n' "$NODE_SOURCE"
+  printf 'NODE_BIN=%s\n' "$NODE"
   printf 'PUBLIC_IP=%s\n' "$PUBLIC_IP"
 } > "$DIR/config.env"
 chmod 600 "$DIR/config.env" 2>/dev/null || true
@@ -1262,9 +1660,9 @@ cat > "$DIR/start.sh" <<'SB_EOF_START'
 set -u
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 [ -f "$DIR/config.env" ] || exit 0
-UUID=''; DOMAIN=''; TLS_PORT=''; PLAIN_PORT=''
+UUID=''; DOMAIN=''; TLS_PORT=''; PLAIN_PORT=''; NODE_BIN=''
 . "$DIR/config.env"
-NODE="$DIR/node/bin/node"
+NODE=${NODE_BIN:-"$DIR/node/bin/node"}
 [ -x "$NODE" ] || exit 0
 mkdir -p "$DIR/run" "$DIR/logs"
 if command -v setsid >/dev/null 2>&1; then LAUNCH=setsid; else LAUNCH=nohup; fi
