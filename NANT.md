@@ -40,6 +40,25 @@ DNS64 绕行下载核心。
 
 后续将按全功能定位把核心支持的更多协议与功能补进脚本。
 
+## 0.2.0 更新（2026-11-24）
+
+入站补齐到九个：VLESS+Reality、Hysteria2、Shadowsocks 2022、
+VMess+WS、Trojan、TUIC v5、AnyTLS、VLESS+WS+TLS 域名链、Naive；
+另加 WireGuard 端点 / WARP 出站（纯 IPv6 机器默认开 ipv4 模式）。
+
+CF 自动域名已全链实测（纯 IPv6 机器）：提供 Cloudflare API Token 后
+自动建子域名、开橙色云代理、经 DNS-01 签发 Let's Encrypt 真证书，
+客户端不需要允许不安全证书，真流量实测 204 通过。
+
+本版三个修复：
+
+- 令牌文件 cf.env 权限：所有写路径收尾都纠回 600，读取时再自愈一次
+- 重跑复用已建域名：安装中断后重跑时，先回读确认 cf.env 里记着的
+  域名仍在 Cloudflare 里，就直接复用、不新建记录，不再产生删不到的
+  孤儿记录
+- 静默步骤加提示：调 Cloudflare 接口、注册 WARP 这类长时间无输出的
+  步骤，开工前先提示在做什么、大约要等多久、不要关闭终端
+
 ## 实测（2026-11-24，Oracle Cloud 凤凰城：1 OCPU / 6 GB / arm64）
 
 | 档位 | 数值 |

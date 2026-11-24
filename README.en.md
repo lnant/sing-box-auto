@@ -67,7 +67,7 @@ systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
 e.g. `.../sing-box-auto/v1.1.3/sing-box-auto.sh`. Current versions: **v1.1.3** (6-in-1 /
-lite), **coexist-v1.1.4**, **nant-v0.1.0** (NantCore v1.0), **node-v0.1.0**. See the
+lite), **coexist-v1.1.4**, **nant-v0.2.0** (NantCore v1.0), **node-v0.1.0**. See the
 CHANGELOG files and GitHub Releases.
 
 The detailed sections below cover the 6-in-1 and lite editions; see
