@@ -2,23 +2,30 @@
 
 （[English](README.en.md)）
 
-sing-box 一键安装脚本家族的统一发布仓：四个版本同仓发布，**全程零交互**，
+sing-box 一键安装脚本家族的统一发布仓：多个版本同仓发布，**全程零交互**，
 复制一条命令即可装好。各版本参考互联网上相关 sing-box 一键脚本，去掉了所有
 交互式提问（端口、证书、内核版本、防火墙确认等），全部用合理默认值或自动
 生成的值代替，按功能从全到简排列如下，按需选一。
 
-## 四个版本（按需选一）
+## sing-box 系版本（按需选一）
 
-| | `sing-box-coexist.sh`（七合一） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） | `sing-box-mini.sh`（轻量版） |
+| | `sing-box-coexist.sh`（七合一） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） | `sing-box-nant.sh`（定制核心版） |
 |---|---|---|---|---|
-| 协议 | 六合一全部 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality | VLESS+Reality、Hysteria2、Shadowsocks 2022 |
-| 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box | 定制编译（约 40M，官方约 78M） |
-| 占用 | 常规 | 常规 | 常规 | 装机约 40M、运行 34–47M |
-| 适合 | 要域名链 + WARP（功能最全） | 多线路备用 | 只要一个节点 | 小内存 / 小硬盘机器 |
-| 详细 | [COEXIST.md](COEXIST.md) | 本页下方 | 本页下方 | [MINI.md](MINI.md) |
+| 协议 | 六合一全部 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality | 首版 VLESS+Reality、Hysteria2、Shadowsocks 2022，后续按全功能补齐 |
+| 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box | 自建核心 NantCore（全功能构建，独立仓发布） |
+| 占用 | 常规 | 常规 | 常规 | 二进制约 78M、空载约 55M（实测） |
+| 适合 | 要域名链 + WARP（功能最全） | 多线路备用 | 只要一个节点 | 要自建核心、全功能路线 |
+| 详细 | [COEXIST.md](COEXIST.md) | 本页下方 | 本页下方 | [NANT.md](NANT.md) |
+
+另有一支 Node.js 运行时方案 **`node-auto.sh`**：不带代理类二进制，
+自拉 Node 运行时跑 VLESS-WS（TLS + 明文双实例），适合普通服务器，
+也适合限制较多的环境；一键脚本用不上的环境（面板主机等）见
+[NODE-AUTO.md](NODE-AUTO.md) 的手动安装教程。
 
 各版本在同一发布页用带前缀的 tag 区分（七合一 `coexist-v*`、六合一/精简版 `v*`、
-轻量版 `mini-v*`、轻量版核心 `core-v*`），各自更新、互不串版。
+定制核心版 `nant-v*`、Node 版 `node-v*`），各自更新、互不串版。
+定制核心版的前身是轻量版 `sing-box-mini.sh`（`mini-v*` 为其历史发布，
+其核心 `core-v*` 已迁至 NantCore 独立仓发布）。
 
 ## 一键安装
 
@@ -40,10 +47,16 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-a
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-vless.sh | sudo bash
 ```
 
-轻量版（50M 级三协议，定制核心）：
+定制核心版（自建核心 NantCore，全功能路线）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-mini.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-nant.sh | sudo bash
+```
+
+Node 版（Node.js 运行时，不需要 root、不需要 systemd）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/node-auto.sh | sh
 ```
 
 要求：Linux 服务器（Debian / Ubuntu / CentOS / Oracle Linux 等），**root 权限**，
@@ -59,31 +72,32 @@ x86_64 / arm64 / armv7 架构。另外：
 
 ## 版本
 
-当前版本：六合一/精简版 **v1.1.2**、七合一 **coexist-v1.1.2**、
-轻量版 **mini-v0.1.1**（核心 core-v1.14.4）。变更记录见
+当前版本：六合一/精简版 **v1.1.3**、七合一 **coexist-v1.1.4**、
+定制核心版 **nant-v0.1.0**（核心 NantCore v1.0）、Node 版 **node-v0.1.0**。
+变更记录见
 [CHANGELOG.md](CHANGELOG.md)、[CHANGELOG-coexist.md](CHANGELOG-coexist.md)、
-[CHANGELOG-mini.md](CHANGELOG-mini.md)，发布包见 GitHub Releases。
-已安装的机器上运行 `sbox version`（轻量版 `sbm version`）可查看脚本版本号。
+[CHANGELOG-nant.md](CHANGELOG-nant.md)、[CHANGELOG-node.md](CHANGELOG-node.md)，发布包见 GitHub Releases。
+已安装的机器上运行 `sbox version`（定制核心版 `sbn version`）可查看脚本版本号。
 
 一键安装默认拉取最新版（main 分支）。若想固定在某个已发布版本（例如新版有问题时回退），
 把命令里的 `main` 换成对应的版本 tag 即可：
 
-六合一版（固定 v1.1.2）：
+六合一版（固定 v1.1.3）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.2/sing-box-auto.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.3/sing-box-auto.sh | sudo bash
 ```
 
-精简版（固定 v1.1.2）：
+精简版（固定 v1.1.3）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.2/sing-box-vless.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.3/sing-box-vless.sh | sudo bash
 ```
 
 ## 六合一 / 精简版详细说明
 
 以下各节是六合一与精简版的细节；七合一见 [COEXIST.md](COEXIST.md)，
-轻量版见 [MINI.md](MINI.md)。
+定制核心版见 [NANT.md](NANT.md)，Node 版见 [NODE-AUTO.md](NODE-AUTO.md)。
 
 ## 端口（随机分配）
 
