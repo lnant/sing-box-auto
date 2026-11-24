@@ -10,11 +10,11 @@ sing-box 系版本均使用官方 sing-box 核心，支持 sing-box 的数十种
 
 ## sing-box 系版本（按需选一）
 
-| | `sing-box-coexist.sh`（七合一） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） |
+| | `sing-box-coexist.sh`（全功能版 full） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） |
 |---|---|---|---|---|
-| 协议 | 六合一全部 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality |
+| 协议 | 九入站（含 VLESS+WS+TLS 域名链）、Argo 隧道（可选）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality |
 | 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box |
-| 适合 | 要域名链 + WARP（功能最全） | 多线路备用 | 只要一个节点 |
+| 适合 | 功能最全：域名链 + 可选 Argo + WARP | 多线路备用 | 只要一个节点 |
 | 详细 | [COEXIST.md](COEXIST.md) | 本页下方 | 本页下方 |
 
 另有一支 Node.js 运行时方案 **`node-auto.sh`**：不带代理类二进制，
@@ -22,12 +22,12 @@ sing-box 系版本均使用官方 sing-box 核心，支持 sing-box 的数十种
 也适合限制较多的环境；一键脚本用不上的环境（面板主机等）见
 [NODE-AUTO.md](NODE-AUTO.md) 的手动安装教程。
 
-各版本在同一发布页用带前缀的 tag 区分（七合一 `coexist-v*`、六合一/精简版 `v*`、
+各版本在同一发布页用带前缀的 tag 区分（全功能版 `coexist-v*`、六合一/精简版 `v*`、
 Node 版 `node-v*`），各自更新、互不串版。
 
 ## 一键安装
 
-七合一版（TLS + Argo 共存，含 WARP，功能最全）：
+全功能版（九入站 + 域名链 + 可选 Argo + WARP，功能最全）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
@@ -66,8 +66,8 @@ x86_64 / arm64 / armv7 架构。Node 版不需要 root、不需要 systemd，
 
 ## 版本
 
-当前版本：六合一/精简版 **v1.1.3**、七合一 **coexist-v1.1.4**、
-Node 版 **node-v0.2.0**。
+当前版本：六合一/精简版 **v1.1.3**、全功能版 **coexist-v1.2.0**、
+Node 版 **node-v0.1.0**。
 变更记录见
 [CHANGELOG.md](CHANGELOG.md)、[CHANGELOG-coexist.md](CHANGELOG-coexist.md)、
 [CHANGELOG-node.md](CHANGELOG-node.md)，发布包见 GitHub Releases。
@@ -90,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.3/sing-box
 
 ## 六合一 / 精简版详细说明
 
-以下各节是六合一与精简版的细节；七合一见 [COEXIST.md](COEXIST.md)，
+以下各节是六合一与精简版的细节；全功能版见 [COEXIST.md](COEXIST.md)，
 Node 版见 [NODE-AUTO.md](NODE-AUTO.md)。
 
 ## 端口（随机分配）

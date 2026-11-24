@@ -8,11 +8,11 @@ The sing-box editions all use the official sing-box core and support sing-box's 
 
 ## Editions
 
-| | `sing-box-coexist.sh` (7-in-1) | `sing-box-auto.sh` (6-in-1) | `sing-box-vless.sh` (lite) |
+| | `sing-box-coexist.sh` (full-featured, "full") | `sing-box-auto.sh` (6-in-1) | `sing-box-vless.sh` (lite) |
 |---|---|---|---|---|
-| Protocols | 6-in-1 set + VLESS+WS+TLS domain route (coexists with Argo), WARP egress | VLESS+Reality, VMess+WS, VMess+Argo tunnel, Hysteria2, TUIC, AnyTLS | VLESS+Reality only |
+| Protocols | Nine inbounds incl. VLESS+WS+TLS domain route, optional Argo tunnel, WARP egress | VLESS+Reality, VMess+WS, VMess+Argo tunnel, Hysteria2, TUIC, AnyTLS | VLESS+Reality only |
 | Core | Official sing-box | Official sing-box | Official sing-box |
-| Best for | Domain route + WARP (most complete) | Multiple fallback routes | A single, simple node |
+| Best for | Domain route + optional Argo + WARP (most complete) | Multiple fallback routes | A single, simple node |
 | Details | [COEXIST.md](COEXIST.md) | Below | Below |
 
 There is also **`node-auto.sh`**, a Node.js-runtime edition: no proxy
@@ -21,13 +21,13 @@ instances), for regular servers and restricted environments alike. For
 environments where a one-command installer cannot run (hosting panels
 and the like), see the manual guide in [NODE-AUTO.md](NODE-AUTO.md).
 
-Versions are prefix-tagged on one Releases page: `coexist-v*` (7-in-1), `v*` (6-in-1 /
+Versions are prefix-tagged on one Releases page: `coexist-v*` (full-featured), `v*` (6-in-1 /
 lite), `node-v*` (Node edition). Each edition
 self-updates within its own prefix.
 
 ## Install
 
-7-in-1 edition (TLS + Argo coexisting, with WARP):
+Full-featured edition (nine inbounds, domain route, optional Argo, WARP):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-coexist.sh | sudo bash
@@ -60,11 +60,11 @@ systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
 e.g. `.../sing-box-auto/v1.1.3/sing-box-auto.sh`. Current versions: **v1.1.3** (6-in-1 /
-lite), **coexist-v1.1.4**, **node-v0.2.0**. See the
+lite), **coexist-v1.2.0**, **node-v0.1.0**. See the
 CHANGELOG files and GitHub Releases.
 
 The detailed sections below cover the 6-in-1 and lite editions; see
-[COEXIST.md](COEXIST.md) for the 7-in-1 and [NODE-AUTO.md](NODE-AUTO.md)
+[COEXIST.md](COEXIST.md) for the full-featured edition and [NODE-AUTO.md](NODE-AUTO.md)
 for the Node edition.
 
 ## After install
