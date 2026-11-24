@@ -6,16 +6,16 @@ sing-box 一键安装脚本家族的统一发布仓：多个版本同仓发布�
 复制一条命令即可装好。各版本参考互联网上相关 sing-box 一键脚本，去掉了所有
 交互式提问（端口、证书、内核版本、防火墙确认等），全部用合理默认值或自动
 生成的值代替，按功能从全到简排列如下，按需选一。
+sing-box 系版本均使用官方 sing-box 核心，支持 sing-box 的数十种主流协议。
 
 ## sing-box 系版本（按需选一）
 
-| | `sing-box-coexist.sh`（七合一） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） | `sing-box-nant.sh`（定制核心版） |
+| | `sing-box-coexist.sh`（七合一） | `sing-box-auto.sh`（六合一） | `sing-box-vless.sh`（精简版） |
 |---|---|---|---|---|
-| 协议 | 六合一全部 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality | 首版 VLESS+Reality、Hysteria2、Shadowsocks 2022，后续按全功能补齐 |
-| 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box | 自建核心 NantCore（全功能构建，独立仓发布） |
-| 占用 | 常规 | 常规 | 常规 | 二进制约 78M、空载约 55M（实测） |
-| 适合 | 要域名链 + WARP（功能最全） | 多线路备用 | 只要一个节点 | 要自建核心、全功能路线 |
-| 详细 | [COEXIST.md](COEXIST.md) | 本页下方 | 本页下方 | [NANT.md](NANT.md) |
+| 协议 | 六合一全部 + VLESS+WS+TLS 域名链（与 Argo 共存）、WARP 出站 | VLESS+Reality、VMess+WS、VMess+Argo、Hysteria2、TUIC、AnyTLS | VLESS+Reality |
+| 核心 | 官方 sing-box | 官方 sing-box | 官方 sing-box |
+| 适合 | 要域名链 + WARP（功能最全） | 多线路备用 | 只要一个节点 |
+| 详细 | [COEXIST.md](COEXIST.md) | 本页下方 | 本页下方 |
 
 另有一支 Node.js 运行时方案 **`node-auto.sh`**：不带代理类二进制，
 自拉 Node 运行时跑 VLESS-WS（TLS + 明文双实例），适合普通服务器，
@@ -23,9 +23,7 @@ sing-box 一键安装脚本家族的统一发布仓：多个版本同仓发布�
 [NODE-AUTO.md](NODE-AUTO.md) 的手动安装教程。
 
 各版本在同一发布页用带前缀的 tag 区分（七合一 `coexist-v*`、六合一/精简版 `v*`、
-定制核心版 `nant-v*`、Node 版 `node-v*`），各自更新、互不串版。
-定制核心版的前身是轻量版 `sing-box-mini.sh`（`mini-v*` 为其历史发布，
-其核心 `core-v*` 已迁至 NantCore 独立仓发布）。
+Node 版 `node-v*`），各自更新、互不串版。
 
 ## 一键安装
 
@@ -45,12 +43,6 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-a
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-vless.sh | sudo bash
-```
-
-定制核心版（自建核心 NantCore，全功能路线）：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-nant.sh | sudo bash
 ```
 
 Node 版（Node.js 运行时，不需要 root、不需要 systemd）：
@@ -75,11 +67,11 @@ x86_64 / arm64 / armv7 架构。Node 版不需要 root、不需要 systemd，
 ## 版本
 
 当前版本：六合一/精简版 **v1.1.3**、七合一 **coexist-v1.1.4**、
-定制核心版 **nant-v0.2.0**（核心 NantCore v1.0）、Node 版 **node-v0.1.0**。
+Node 版 **node-v0.1.0**。
 变更记录见
 [CHANGELOG.md](CHANGELOG.md)、[CHANGELOG-coexist.md](CHANGELOG-coexist.md)、
-[CHANGELOG-nant.md](CHANGELOG-nant.md)、[CHANGELOG-node.md](CHANGELOG-node.md)，发布包见 GitHub Releases。
-已安装的机器上运行 `sbox version`（定制核心版 `sbn version`）可查看脚本版本号。
+[CHANGELOG-node.md](CHANGELOG-node.md)，发布包见 GitHub Releases。
+已安装的机器上运行 `sbox version` 可查看脚本版本号。
 
 一键安装默认拉取最新版（main 分支）。若想固定在某个已发布版本（例如新版有问题时回退），
 把命令里的 `main` 换成对应的版本 tag 即可：
@@ -99,7 +91,7 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/v1.1.3/sing-box
 ## 六合一 / 精简版详细说明
 
 以下各节是六合一与精简版的细节；七合一见 [COEXIST.md](COEXIST.md)，
-定制核心版见 [NANT.md](NANT.md)，Node 版见 [NODE-AUTO.md](NODE-AUTO.md)。
+Node 版见 [NODE-AUTO.md](NODE-AUTO.md)。
 
 ## 端口（随机分配）
 
@@ -218,8 +210,7 @@ SELinux 的 Permissive 设置、被禁用的 `dnf-makecache` 定时器、无 sys
 
 ## 许可证与上游
 
-四个版本都基于 [sing-box](https://github.com/SagerNet/sing-box)——或装官方二进制，
-或（轻量版）从其源码定制编译。sing-box 版权所有 © nekohasekai
+各版本都基于 [sing-box](https://github.com/SagerNet/sing-box)，使用官方二进制。
+sing-box 版权所有 © nekohasekai
 <contact-sagernet@sekai.icu>，依 GNU 通用公共许可证 v3（GPLv3）发布，
-上游许可证全文见 [LICENSE-sing-box.txt](LICENSE-sing-box.txt)，
-轻量版核心的 Release 附件中亦附带该文件。
+上游许可证全文见 [LICENSE-sing-box.txt](LICENSE-sing-box.txt)。
