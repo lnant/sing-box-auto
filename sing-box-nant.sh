@@ -649,6 +649,38 @@ maybe_prompt_cf_token() {
   echo "[信息] 已选用 Cloudflare 域名：$SBOX_CF_ZONE"
 }
 
+# 公网 IP 探测不到时让装机人手填（仅交互安装）：挂在 load_or_gen_identity
+# 里、ensure_tls_domain 之前——安装流程第一次需要公网 IP 的上游，只问这
+# 一次，后面的 CF 建记录、sslip 兜底、证书 SAN、链接生成都经 get_ip 读
+# 同一个值。填对了存进 nant.env 的 PUBLIC_IP，重跑不再问。填错或空填
+# 算一次，三次用完就明确提示并退出安装（exit 1）：地址不对硬装出来的
+# 记录和链接全是坏的，不如停下来问清。非交互（管道 / SBOX_YES / 已存
+# PUBLIC_IP / 探测得到）不问、行为分毫不变。
+maybe_prompt_public_ip() {
+  [[ "${ACTION:-}" == "install" ]] || return 0
+  [[ -t 0 ]] || return 0
+  [[ -z "${SBOX_YES:-}" ]] || return 0
+  [[ -z "${PUBLIC_IP:-}" ]] || return 0
+  [[ -n "$(get_ip)" ]] && return 0
+  echo "[信息] 未能自动检测到本机公网 IP（几个探测站都没给出结果）"
+  local _try=0 _in=""
+  while (( _try < 3 )); do
+    _try=$((_try+1))
+    read -rp "请输入这台机器的公网 IP（IPv4 或 IPv6，第 ${_try}/3 次）： " _in || true
+    _in=$(printf '%s' "$_in" | tr -d '[:space:]')
+    _in="${_in#[}"; _in="${_in%]}"
+    if [[ "$_in" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+       || { [[ "$_in" == *:* ]] && [[ "$_in" =~ ^[0-9a-fA-F:]+$ ]]; }; then
+      PUBLIC_IP="$_in"
+      echo "[信息] 已采用手动填写的公网 IP：$PUBLIC_IP（会存入配置，建记录与链接都用它，重跑不再问）"
+      return 0
+    fi
+    echo "[警告] 这个 IP 格式不对（空填也算一次），还剩 $((3-_try)) 次机会"
+  done
+  echo "[错误] 未取得可用的公网 IP，安装终止；确认这台机器的公网 IP 后重跑安装即可。"
+  exit 1
+}
+
 # TLS 域名兜底：已设置则保留；未设置时优先用 Cloudflare 自动子域名（需已有
 # Token），否则用公网 IP 生成 sslip.io 临时域名（解析直达本机、立即可用；
 # IPv4 点换横杠、IPv6 冒号换横杠，两种写法均可解析出对应记录），走自签直连。
@@ -747,6 +779,7 @@ TLS_DOMAIN="${TLS_DOMAIN:-}"
 TLS_DOMAIN_AUTO="${TLS_DOMAIN_AUTO:-1}"
 TLS_ACME="${TLS_ACME:-0}"
 TLS_ACME_MODE="${TLS_ACME_MODE:-cf}"
+PUBLIC_IP="${PUBLIC_IP:-}"
 EOF
   chmod 600 "$ENV_FILE"
 }
@@ -832,6 +865,7 @@ load_or_gen_identity() {
       if (( _filled == 1 )); then
         echo "[信息] 已为新增协议补齐凭据与端口（原有身份与端口不变）"
       fi
+      maybe_prompt_public_ip
       ensure_tls_domain
       save_env
       return 0
@@ -839,6 +873,7 @@ load_or_gen_identity() {
     echo "[警告] 已有配置不完整，将重新生成身份信息"
   fi
   gen_identity
+  maybe_prompt_public_ip
   ensure_tls_domain
   save_env
 }
@@ -1678,6 +1713,13 @@ done
 
 #----------------------------- 10. 链接 ---------------------------------------
 get_ip() {
+  # 配置里存过手填的公网 IP（nant.env 的 PUBLIC_IP）时优先用它：建记录、
+  # 证书 SAN、链接生成都认这一个，不再重复探测/询问（格式与探测结果
+  # 一致：IPv4 裸写、IPv6 带方括号）
+  if [[ -n "${PUBLIC_IP:-}" ]]; then
+    if [[ "$PUBLIC_IP" == *:* ]]; then echo "[$PUBLIC_IP]"; else echo "$PUBLIC_IP"; fi
+    return 0
+  fi
   local src ip=""
   for src in "https://icanhazip.com" "https://ip.sb" "https://ifconfig.me/ip" "https://api.ipify.org"; do
     ip=$(curl -fsSL --max-time 8 -4 "$src" 2>/dev/null | tr -d '[:space:]' || true)
