@@ -6,7 +6,7 @@
 
 先说三类环境共同的底层逻辑，后面不再重复：
 
-- **手动流程用的程序包就是配套项目 yunting**（https://github.com/lnant/sing-box-auto/tree/main/yunting ）：
+- **手动流程用的程序包就是配套项目 yunting**（https://github.com/lnant/sing-box-auto/tree/main/yunting）：
   把该仓的文件整套取下来，传到目标环境里你新建的应用目录根下即可。
   这个目录里就这些东西：主程序 `app.js`（入口，服务本体）、依赖清单 `package.json`
   （只依赖 ws 一个包）、几个静态页面与 `poems/` 目录（站点页面内容）、
