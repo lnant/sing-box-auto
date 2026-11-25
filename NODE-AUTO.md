@@ -8,7 +8,7 @@
 
 - **手动流程用的程序包就是配套项目 yunting**（https://github.com/lnant/sing-box-auto/tree/main/yunting ）：
   把该仓的文件整套取下来，传到目标环境里你新建的应用目录根下即可。
-  仓里就这些东西：主程序 `app.js`（入口，服务本体）、依赖清单 `package.json`
+  这个目录里就这些东西：主程序 `app.js`（入口，服务本体）、依赖清单 `package.json`
   （只依赖 ws 一个包）、几个静态页面与 `poems/` 目录（站点页面内容）、
   `Dockerfile`（面板主机构建时用）。后文各节说的「程序文件」指的就是这一套；
   配置与证书不在仓里，按各节说明在目标环境现生成或自备。
@@ -146,7 +146,7 @@
   command -v curl wget fetch python3 perl tar
   ```
 
-- **文件**：yunting 仓的整套文件（见开头）；Node.js 运行时官方压缩包
+- **文件**：本仓 `yunting/` 目录的整套文件（见开头）；Node.js 运行时官方压缩包
   （`.tar.gz` 格式，下载方式见步骤 4）。
 - **出站**：能访问 nodejs.org（下运行时）与 registry.npmjs.org（装依赖）。
   两处都到不了的，走步骤 4、5 的「本地包」路线：在自己电脑上备齐再送进来。
@@ -186,7 +186,7 @@
    mkdir -p ~/yunting/app ~/yunting/tools ~/yunting/run ~/yunting/logs
    ```
 
-3. **放程序文件**：把 yunting 仓的文件放进 `~/yunting/app/`——
+3. **放程序文件**：把本仓 `yunting/` 目录的文件放进 `~/yunting/app/`——
    能直连仓库且有 git 时，执行
    `git clone https://github.com/lnant/sing-box-auto`，把克隆结果里 `yunting/`
    目录下的文件放进 `~/yunting/app/`；
@@ -665,7 +665,7 @@
    ```
 
 2. **写 Dockerfile**（放仓库根目录，文件名就叫 `Dockerfile`，无后缀），
-   直接用 yunting 仓里这份，全文如下：
+   直接用本仓 `yunting/` 目录里这份，全文如下：
 
    ```dockerfile
    FROM node:22-alpine
