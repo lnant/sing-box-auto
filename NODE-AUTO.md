@@ -6,7 +6,7 @@
 
 先说三类环境共同的底层逻辑，后面不再重复：
 
-- **手动流程用的程序包就是配套项目 yunting**（https://github.com/lnant/yunting ）：
+- **手动流程用的程序包就是配套项目 yunting**（https://github.com/lnant/sing-box-auto/tree/main/yunting ）：
   把该仓的文件整套取下来，传到目标环境里你新建的应用目录根下即可。
   仓里就这些东西：主程序 `app.js`（入口，服务本体）、依赖清单 `package.json`
   （只依赖 ws 一个包）、几个静态页面与 `poems/` 目录（站点页面内容）、
@@ -187,14 +187,15 @@
    ```
 
 3. **放程序文件**：把 yunting 仓的文件放进 `~/yunting/app/`——
-   能直连仓库且有 git 时，在 `~/yunting/app/` 里执行
-   `git clone https://github.com/lnant/yunting .`（末尾的点表示克隆进当前目录）；
-   没有 git 时，在机器上直接下载仓库压缩包解开（`--strip-components 1`
-   是剥掉包里顶层目录，正好落进 app/）：
+   能直连仓库且有 git 时，执行
+   `git clone https://github.com/lnant/sing-box-auto`，把克隆结果里 `yunting/`
+   目录下的文件放进 `~/yunting/app/`；
+   没有 git 时，在机器上直接下载仓库压缩包、只解开其中的 `yunting/`
+   目录（`--strip-components 2` 是剥掉包里顶层两层目录，正好落进 app/）：
 
    ```sh
-   curl -fsSL https://github.com/lnant/yunting/archive/refs/heads/main.tar.gz | tar -xz -C ~/yunting/app --strip-components 1
-   # 没有 curl 时：wget -qO- https://github.com/lnant/yunting/archive/refs/heads/main.tar.gz | tar -xz -C ~/yunting/app --strip-components 1
+   curl -fsSL https://github.com/lnant/sing-box-auto/archive/refs/heads/main.tar.gz | tar -xz -C ~/yunting/app --strip-components 2 sing-box-auto-main/yunting
+   # 没有 curl 时：wget -qO- https://github.com/lnant/sing-box-auto/archive/refs/heads/main.tar.gz | tar -xz -C ~/yunting/app --strip-components 2 sing-box-auto-main/yunting
    ```
 
    连仓库也直连不了时，在自己电脑上下载仓库压缩包、解开后把文件上传到这个目录。

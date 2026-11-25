@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登高 · 云汀之上</title>
+<style>
+:root{
+  --bg:#f4f7f5; --surface:#ffffff; --surface2:#eef4f1; --ink:#22302c; --muted:#6d7d76;
+  --line:#dce6e0; --accent:#2f6f6a; --accent2:#7fb3ac; --gold:#b98a2f;
+  --shadow:0 6px 24px rgba(34,48,44,.08); --radius:14px;
+}
+html[data-theme="dark"]{
+  --bg:#141a18; --surface:#1d2522; --surface2:#232d29; --ink:#dde7e2; --muted:#93a49c;
+  --line:#2e3a35; --accent:#7fb3ac; --accent2:#2f6f6a; --gold:#d3a94f;
+  --shadow:0 6px 24px rgba(0,0,0,.35);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:"Noto Serif SC","Songti SC","STSong","SimSun","宋体",serif;line-height:1.9;
+  transition:background .25s,color .25s}
+a{color:var(--accent);text-decoration:none}
+.topbar{position:sticky;top:0;z-index:40;background:var(--surface);
+  border-bottom:1px solid var(--line);box-shadow:0 1px 10px rgba(0,0,0,.04)}
+.topbar-in{max-width:1020px;margin:0 auto;padding:0 18px;height:58px;
+  display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:baseline;gap:10px;color:var(--ink)}
+.brand .name{font-size:1.25rem;font-weight:700;letter-spacing:.28em}
+.brand .sub{font-size:.78rem;color:var(--muted);letter-spacing:.14em}
+.topnav{margin-left:auto;display:flex;gap:4px}
+.topnav a{color:var(--ink);padding:6px 14px;border-radius:999px;font-size:.95rem;letter-spacing:.12em}
+.topnav a:hover{background:var(--surface2)}
+.topnav a.here{background:var(--accent);color:#fff}
+.iconbtn{margin-left:6px;width:38px;height:38px;border-radius:50%;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink);font-size:1.05rem;cursor:pointer;line-height:1}
+.iconbtn:hover{border-color:var(--accent2)}
+.drawer{position:fixed;top:0;right:-300px;width:280px;max-width:84vw;height:100%;z-index:60;
+  background:var(--surface);border-left:1px solid var(--line);box-shadow:var(--shadow);
+  transition:right .25s;padding:22px 22px 30px;overflow:auto}
+.drawer.open{right:0}
+.drawer h3{margin:14px 0 8px;font-size:.85rem;letter-spacing:.3em;color:var(--muted)}
+.drawer a{display:block;color:var(--ink);padding:7px 8px;border-radius:8px;font-size:.98rem}
+.drawer a:hover{background:var(--surface2)}
+.drawer .close{float:right}
+.mask{position:fixed;inset:0;background:rgba(20,26,24,.35);z-index:50;display:none}
+.mask.show{display:block}
+.hero{background:linear-gradient(135deg,#2f6f6a 0%,#558f86 55%,#8fb8ad 100%);color:#fff}
+.hero-in{max-width:1020px;margin:0 auto;padding:52px 22px 46px;text-align:center}
+.hero h1{margin:0;font-size:2.6rem;font-weight:700;letter-spacing:.4em;text-indent:.4em}
+.hero p{margin:14px auto 0;max-width:560px;font-size:1rem;opacity:.92;letter-spacing:.06em}
+.hero .btns{margin-top:24px;display:flex;gap:12px;justify-content:center}
+.hero .btns a{padding:8px 26px;border-radius:999px;letter-spacing:.2em;font-size:.95rem}
+.btn-solid{background:#fff;color:#2f6f6a}
+.btn-ghost{border:1px solid rgba(255,255,255,.75);color:#fff}
+.stats{max-width:1020px;margin:-24px auto 0;padding:0 22px;position:relative;z-index:2}
+.stats-in{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);display:flex;flex-wrap:wrap}
+.stats-in div{flex:1 1 120px;text-align:center;padding:14px 8px}
+.stats-in b{display:block;font-size:1.25rem;color:var(--accent)}
+.stats-in span{font-size:.82rem;color:var(--muted);letter-spacing:.15em}
+.wrap{max-width:1020px;margin:0 auto;padding:34px 22px 10px}
+.section-t{font-size:1.15rem;font-weight:700;letter-spacing:.25em;margin:26px 0 16px;
+  display:flex;align-items:center;gap:12px}
+.section-t:after{content:"";flex:1;height:1px;background:var(--line)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  box-shadow:var(--shadow);padding:30px 34px 24px}
+.card h2{margin:0 0 4px;font-size:1.35rem;font-weight:700;text-align:center}
+.card .author{text-align:center;font-size:.9rem;color:var(--muted);margin-bottom:18px;letter-spacing:.12em}
+.verse{text-align:center;font-size:1.06rem}
+.verse p{margin:0 0 14px}.verse p:last-child{margin-bottom:0}
+.note{margin-top:22px;padding-top:14px;border-top:1px dashed var(--line);
+  font-size:.93rem;color:var(--muted);text-align:justify}
+.note .tag{color:var(--gold);letter-spacing:.2em;margin-right:.5em}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px}
+.pcard{display:block;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);
+  padding:20px 20px 16px;color:var(--ink);box-shadow:var(--shadow);transition:transform .15s,border-color .15s}
+.pcard:hover{transform:translateY(-3px);border-color:var(--accent2)}
+.pcard .tag{display:inline-block;font-size:.72rem;letter-spacing:.18em;color:#fff;
+  background:var(--accent);border-radius:999px;padding:1px 10px;margin-bottom:10px}
+.pcard .t{font-size:1.08rem;font-weight:700;line-height:1.5}
+.pcard .a{font-size:.85rem;color:var(--muted);letter-spacing:.1em;margin-top:2px}
+.pcard .first{margin-top:10px;font-size:.92rem;color:var(--muted);line-height:1.7}
+.pcard .go{margin-top:12px;font-size:.85rem;color:var(--accent);letter-spacing:.15em}
+.prose p{margin:0 0 14px;text-align:justify}
+.prose p:last-child{margin-bottom:0}
+.infogrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin-top:16px}
+.info{background:var(--surface2);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px}
+.info h4{margin:0 0 6px;font-size:.95rem;letter-spacing:.2em;color:var(--accent)}
+.info p{margin:0;font-size:.92rem;color:var(--muted);line-height:1.8}
+.pager{margin-top:26px;display:flex;justify-content:space-between;gap:10px;font-size:.95rem}
+.pager a{padding:8px 18px;background:var(--surface);border:1px solid var(--line);border-radius:999px;color:var(--ink)}
+.pager a:hover{border-color:var(--accent2)}
+footer{margin-top:52px;background:var(--surface);border-top:1px solid var(--line)}
+.foot-in{max-width:1020px;margin:0 auto;padding:30px 22px 8px;display:flex;flex-wrap:wrap;gap:26px}
+.foot-in .col{flex:1 1 200px}
+.foot-in h5{margin:0 0 8px;font-size:.85rem;letter-spacing:.3em;color:var(--muted)}
+.foot-in p,.foot-in a{font-size:.9rem;color:var(--muted);line-height:1.9}
+.foot-in a{display:block}
+.foot-in a:hover{color:var(--accent)}
+.foot-bottom{max-width:1020px;margin:0 auto;padding:12px 22px 26px;font-size:.82rem;
+  color:var(--muted);letter-spacing:.12em;border-top:1px dashed var(--line);margin-top:18px}
+#toTop{position:fixed;right:18px;bottom:18px;width:42px;height:42px;border-radius:50%;
+  border:1px solid var(--line);background:var(--surface);color:var(--accent);cursor:pointer;
+  box-shadow:var(--shadow);display:none;font-size:1rem;z-index:40}
+@media (max-width:640px){
+  .brand .sub{display:none}.topnav{display:none}
+  #themeBtn{margin-left:auto}
+  .hero h1{font-size:1.9rem}.card{padding:22px 18px 18px}.wrap{padding:24px 14px 6px}
+}
+@media (min-width:641px){#burger{display:none}}
+</style>
+</head>
+<body>
+<div class="topbar"><div class="topbar-in">
+  <a class="brand" href="/"><span class="name">云汀之上</span><span class="sub">闲读诗词</span></a>
+  <nav class="topnav"><a href="/">首页</a><a href="/poems.html" class=here>文章</a><a href="/about.html">关于</a></nav>
+  <button class="iconbtn" id="themeBtn" title="切换深浅色">☾</button>
+  <button class="iconbtn" id="burger" title="菜单">≡</button>
+</div></div>
+<div class="mask" id="mask"></div>
+<aside class="drawer" id="drawer">
+  <button class="iconbtn close" id="drawerClose">×</button>
+  <h3>导航</h3>
+  <a href="/">首页</a><a href="/poems.html">文章</a><a href="/about.html">关于</a>
+  <h3>收录</h3>
+  <a href="/poems/shuidiaogetou.html">水调歌头 · 明月几时有</a><a href="/poems/shengshengman.html">声声慢 · 寻寻觅觅</a><a href="/poems/qingyuan.html">青玉案 · 元夕</a><a href="/poems/yinjiu.html">饮酒 · 其五</a><a href="/poems/denggao.html">登高</a>
+  <h3>小站</h3>
+  <p style="font-size:.9rem;color:var(--muted);line-height:1.8">闲来无事，抄几首旧诗词放在这里，雨天晴天都可读。</p>
+</aside>
+
+<div class="wrap">
+<article class="card">
+    <h2>登高</h2><div class="author">唐 · 杜甫</div>
+    <div class="verse"><p>
+        <span class="line">风急天高猿啸哀，渚清沙白鸟飞回。</span>
+        <span class="line">无边落木萧萧下，不尽长江滚滚来。</span>
+        <span class="line">万里悲秋常作客，百年多病独登台。</span>
+        <span class="line">艰难苦恨繁霜鬓，潦倒新停浊酒杯。</span>
+      </p></div>
+    <div class="note"><span class="tag">小记</span>八句里句句是景，又句句是人。前四句写江天辽阔，落木与长江一去不回；后四句收回到自己身上，漂泊、多病、两鬓添霜。景越大，人越显得孤身，但诗的气势也正从这里来。</div>
+  </article>
+  <div class="pager"><a href="/poems/yinjiu.html">← 上一篇：饮酒 · 其五</a>
+    <span></span></div>
+  <div class="section-t">其他篇目</div>
+  <div class="grid"><a class="pcard" href="/poems/shuidiaogetou.html">
+      <span class="tag">宋词</span>
+      <div class="t">水调歌头 · 明月几时有</div><div class="a">宋 · 苏轼</div>
+      <div class="first">明月几时有？把酒问青天。</div><div class="go">开始读 →</div></a><a class="pcard" href="/poems/shengshengman.html">
+      <span class="tag">宋词</span>
+      <div class="t">声声慢 · 寻寻觅觅</div><div class="a">宋 · 李清照</div>
+      <div class="first">寻寻觅觅，冷冷清清，凄凄惨惨戚戚。</div><div class="go">开始读 →</div></a></div>
+</div>
+<footer>
+  <div class="foot-in">
+    <div class="col"><h5>云汀之上</h5><p>一个小小的读书角。把读过的旧诗词抄下来，配几句小记，慢慢读。</p></div>
+    <div class="col"><h5>导航</h5><a href="/">首页</a><a href="/poems.html">文章</a><a href="/about.html">关于</a></div>
+    <div class="col"><h5>近作</h5><a href="/poems/shuidiaogetou.html">水调歌头 · 明月几时有</a><a href="/poems/shengshengman.html">声声慢 · 寻寻觅觅</a><a href="/poems/qingyuan.html">青玉案 · 元夕</a></div>
+  </div>
+  <div class="foot-bottom">云汀之上 · 闲读诗词 · 山有小口，仿佛若有光</div>
+</footer>
+<button id="toTop" title="回到顶部">↑</button>
+
+<script>
+(function(){
+  var saved=null; try{ saved=localStorage.getItem('yt-theme'); }catch(e){}
+  if(saved){ document.documentElement.setAttribute('data-theme', saved); }
+  var btn=document.getElementById('themeBtn');
+  function sync(){ btn.textContent = document.documentElement.getAttribute('data-theme')==='dark' ? '☀' : '☾'; }
+  sync();
+  btn.addEventListener('click', function(){
+    var cur=document.documentElement.getAttribute('data-theme')==='dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', cur);
+    try{ localStorage.setItem('yt-theme', cur); }catch(e){}
+    sync();
+  });
+  var drawer=document.getElementById('drawer'), mask=document.getElementById('mask');
+  function openD(){ drawer.classList.add('open'); mask.classList.add('show'); }
+  function closeD(){ drawer.classList.remove('open'); mask.classList.remove('show'); }
+  document.getElementById('burger').addEventListener('click', openD);
+  document.getElementById('drawerClose').addEventListener('click', closeD);
+  mask.addEventListener('click', closeD);
+  var top=document.getElementById('toTop');
+  window.addEventListener('scroll', function(){ top.style.display = window.scrollY>420 ? 'block':'none'; });
+  top.addEventListener('click', function(){ window.scrollTo({top:0, behavior:'smooth'}); });
+})();
+</script>
+
+</body>
+</html>
