@@ -34,7 +34,12 @@ curl -fsSL https://raw.githubusercontent.com/lnant/sing-box-auto/main/sing-box-c
 ```
 
 要求：Linux 服务器（Debian / Ubuntu / CentOS / Oracle Linux 等），**root 权限**，
-x86_64 / arm64 / armv7 架构，内存建议 ≥1 GB。
+x86_64 / arm64 架构，内存建议 ≥1 GB。
+
+**适用边界**：本脚本面向普通服务器——以 root 运行、端口由本机自由监听。
+不适用于端口由平台分配、应用只能监听指定端口的沙盒环境，也不支持无 root
+的环境；这类环境请用同仓 Node 版（node-auto）一类运行时方案。在这类环境
+里装本脚本，只会得到「装上了但连不上」。
 
 ## 装机时的几个可选项
 
@@ -105,10 +110,10 @@ cron `@reboot` 兜底。受限容器（OpenVZ 等）自动适配系统 DNS 解�
 
 ## 版本
 
-当前版本：**coexist-v1.2.1**（变更记录见 [CHANGELOG-coexist.md](CHANGELOG-coexist.md)，
+当前版本：**coexist-v1.2.2**（变更记录见 [CHANGELOG-coexist.md](CHANGELOG-coexist.md)，
 发布包见 GitHub Releases）。
 一键安装默认拉取最新版（main 分支）；把命令里的 `main` 换成版本 tag
-（如 `coexist-v1.2.1`）即可固定版本安装。
+（如 `coexist-v1.2.2`）即可固定版本安装。
 
 基于 [sing-box](https://github.com/SagerNet/sing-box)（© nekohasekai，GPLv3），
 上游许可证见 [LICENSE-sing-box.txt](LICENSE-sing-box.txt)。
