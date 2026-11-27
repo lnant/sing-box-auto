@@ -3,6 +3,10 @@
 本项目的版本号写在脚本的 `SCRIPT_VERSION` 里，并与 GitHub 的 tag / Release 对应。
 一键安装默认拉最新版（main 分支）；把安装命令里的 `main` 换成某个 tag（如 `v1.0.0`）即可固定版本安装。
 
+## v1.2.1（2026-11-27）
+
+- **修复**：WARP 注册不再按 wgcf 的 client_id 推导 reserved 字节，改为恒不写 reserved 字段。此前在部分纯 IPv6 机器上，带推导出的 reserved 时 Cloudflare 不回 WireGuard 握手，表现为 WARP 开启失败或开启后无流量；去掉后同账号、同端点握手正常（实测对照确认）。已装机器重跑新版安装、重新注册 WARP 后生效，UUID 与端口不变。
+
 ## v1.2.0（2026-11-25）
 
 - **合并**：本支与全功能版（full）合并——以全功能版为底重写（官方 sing-box 核心、九入站、手动域名流、WARP 经真实服务验出口），统一挂 coexist 名下发布，别名 full／全功能版。自更新仍按 `coexist-v` 前缀取版。支持 sing-box 的数十种主流协议，跟随官方核心更新，后续可支持更多协议与功能。

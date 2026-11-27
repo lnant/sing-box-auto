@@ -59,7 +59,7 @@ the service is systemd-managed (auto-restart on crash); without
 systemd the script falls back to cron `@reboot` entries.
 
 To pin a released version instead of `main`, replace `main` in the URL with a tag,
-e.g. `.../sing-box-auto/v1.2.0/sing-box-auto.sh`. Current versions: **v1.2.0** (7-in-1), **v1.1.3** (lite), **coexist-v1.2.0**, **node-v0.2.1**. See the
+e.g. `.../sing-box-auto/v1.2.0/sing-box-auto.sh`. Current versions: **v1.2.0** (7-in-1), **v1.1.3** (lite), **coexist-v1.2.1**, **node-v0.2.1**. See the
 CHANGELOG files and GitHub Releases.
 
 The detailed sections below cover the 7-in-1 and lite editions; see

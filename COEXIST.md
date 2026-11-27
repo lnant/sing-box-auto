@@ -105,10 +105,10 @@ cron `@reboot` 兜底。受限容器（OpenVZ 等）自动适配系统 DNS 解�
 
 ## 版本
 
-当前版本：**coexist-v1.2.0**（变更记录见 [CHANGELOG-coexist.md](CHANGELOG-coexist.md)，
+当前版本：**coexist-v1.2.1**（变更记录见 [CHANGELOG-coexist.md](CHANGELOG-coexist.md)，
 发布包见 GitHub Releases）。
 一键安装默认拉取最新版（main 分支）；把命令里的 `main` 换成版本 tag
-（如 `coexist-v1.2.0`）即可固定版本安装。
+（如 `coexist-v1.2.1`）即可固定版本安装。
 
 基于 [sing-box](https://github.com/SagerNet/sing-box)（© nekohasekai，GPLv3），
 上游许可证见 [LICENSE-sing-box.txt](LICENSE-sing-box.txt)。

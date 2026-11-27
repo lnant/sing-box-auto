@@ -39,7 +39,7 @@ ACTION="${1:-install}"
 if [[ $# -eq 0 ]] && { [[ "$(basename "$0")" == "sbc" ]] || [[ "$(basename "$0")" == "sbox" ]]; }; then
   ACTION="menu"
 fi
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.2.1"
 CORE_VERSION_DEFAULT="1.14.4"   # 官方仓库取不到最新版时的兜底版本（官方 sing-box 版本号）
 CORE_REPO="SagerNet/sing-box"   # 核心二进制发布仓：官方仓库（脚本本体仍在本仓）
 REPO="lnant/sing-box-auto"
@@ -1777,7 +1777,7 @@ rm -rf "$_dir"
 return 1
 fi
 # 解析 wgcf-profile.conf：[Interface] PrivateKey/Address/MTU、[Peer] PublicKey/Endpoint
-local _conf="$_dir/wgcf-profile.conf" _addr _ep _cid _hex
+local _conf="$_dir/wgcf-profile.conf" _addr _ep
 WARP_PRIVATE_KEY=$(grep -E '^PrivateKey[[:space:]]*=' "$_conf" | head -n 1 | cut -d= -f2- | tr -d ' \r' || true)
 _addr=$(grep -E '^Address[[:space:]]*=' "$_conf" | head -n 1 | cut -d= -f2- | tr -d ' \r' || true)
 WARP_V4=$(printf '%s' "$_addr" | tr ',' '\n' | grep -E '^[0-9.]+/' | head -n 1 | cut -d/ -f1 || true)
@@ -1787,15 +1787,11 @@ WARP_MTU=$(grep -E '^MTU[[:space:]]*=' "$_conf" | head -n 1 | cut -d= -f2- | tr 
 _ep=$(grep -E '^Endpoint[[:space:]]*=' "$_conf" | head -n 1 | cut -d= -f2- | tr -d ' \r' || true)
 WARP_ENDPOINT_HOST="${_ep%:*}"
 WARP_ENDPOINT_PORT="${_ep##*:}"
-# reserved（client_id 三字节）：wgcf 的输出文件里带 client_id 就解出来存下；
-# 没有就留空（endpoint 不写 reserved 字段），是否可用以启用后出口实测为准
+# reserved：永远留空、endpoint 不写 reserved 字段。曾按 wgcf 的 client_id
+# 推导三字节写入，2026-11-27 在纯 IPv6 机（HE 地址段）上 A/B 实证：带推导
+# reserved 时 Cloudflare 不回握手，去掉后同账号同端点、内核 wg 与 sing-box
+# 两种实现都一次握手成功，故不再推导。
 WARP_RESERVED=""
-_cid=$(grep -hoE 'client_id"?[[:space:]]*[:=][[:space:]]*"?[A-Za-z0-9+/=]+' \
-"$_dir/wgcf-account.toml" "$_conf" 2>/dev/null | grep -oE '[A-Za-z0-9+/=]+$' | head -n 1 || true)
-if [[ -n "$_cid" ]]; then
-_hex=$(printf '%s' "$_cid" | base64 -d 2>/dev/null | od -An -tu1 | tr -s ' ' || true)
-WARP_RESERVED=$(printf '%s' "$_hex" | awk '{if (NF>=3) printf "%s,%s,%s", $1, $2, $3}')
-fi
 rm -rf "$_dir"
 WARP_ACCOUNT="free"; WARP_LICENSE=""
 [[ -n "$WARP_MTU" ]] || WARP_MTU="1280"

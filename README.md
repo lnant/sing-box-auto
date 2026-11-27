@@ -66,7 +66,7 @@ x86_64 / arm64 / armv7 架构。Node 版不需要 root、不需要 systemd，
 
 ## 版本
 
-当前版本：七合一 **v1.2.0**、精简版 **v1.1.3**、全功能版 **coexist-v1.2.0**、
+当前版本：七合一 **v1.2.0**、精简版 **v1.1.3**、全功能版 **coexist-v1.2.1**、
 Node 版 **node-v0.2.1**。
 变更记录见
 [CHANGELOG.md](CHANGELOG.md)、[CHANGELOG-coexist.md](CHANGELOG-coexist.md)、
